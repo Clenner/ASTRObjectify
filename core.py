@@ -1,4 +1,4 @@
-﻿"""AOY backend functions. Keep GUI code out of this module."""
+"""AOY backend functions. Keep GUI code out of this module."""
 from __future__ import annotations
 
 import importlib.util
@@ -36,15 +36,15 @@ def find_unreal_cmd() -> Path | None:
 def check_setup(root: str | Path | None = None) -> list[Check]:
     """Report whether the local AOY toolchain components are available."""
     root_path = Path(root) if root else Path(__file__).resolve().parent
-    workspaces = root_path / "Workspaces"
+    local = root_path / "local"
     checks = [
         Check("Python", True, f"{__import__('sys').version_info.major}.{__import__('sys').version_info.minor}"),
         Check("PySide6", importlib.util.find_spec("PySide6") is not None,
               "Importable" if importlib.util.find_spec("PySide6") else "Not installed for this Python"),
-        Check("CAS", (workspaces / "CAS").is_dir() and any((workspaces / "CAS").iterdir()),
-              "Release files staged" if (workspaces / "CAS").is_dir() and any((workspaces / "CAS").iterdir()) else "Release files not found"),
+        Check("CAS", (local / "CAS").is_dir() and any((local / "CAS").iterdir()),
+              "Release files staged" if (local / "CAS").is_dir() and any((local / "CAS").iterdir()) else "Release files not found"),
     ]
-    project = workspaces / "AOYAssetProject"
+    project = local / "AOYAssetProject"
     project_file = project / "AOYAssetProject.uproject"
     enabled_plugins: set[str] = set()
     if project_file.is_file():
@@ -57,7 +57,6 @@ def check_setup(root: str | Path | None = None) -> list[Check]:
         enabled = plugin_file.is_file() and plugin in enabled_plugins
         checks.append(Check(plugin, enabled, "Copied and enabled in AOYAssetProject" if enabled else "Not copied/enabled in AOYAssetProject"))
 
-    local = root_path / "local"
     for tool, filename in (("repak", "repak.exe"), ("unpak", "unpak.bat"), ("repack", "repack.bat")):
         tool_file = local / filename
         checks.append(Check(tool, tool_file.is_file(), str(tool_file) if tool_file.is_file() else "Not found in local/"))
