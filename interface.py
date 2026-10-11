@@ -1,10 +1,45 @@
-﻿import sys
+import sys
+import tkinter
+from tkinter import messagebox, simpledialog
+from pathlib import Path
 import core
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QButtonGroup, QHBoxLayout, QLabel, QMainWindow, QPushButton, QStackedWidget, QVBoxLayout, QWidget
 
 
-PAGES = ["Home", "Create", "Assets", "Settings"]
+PAGES = ["Home", "Create", "Settings"]
+
+
+def create_new_mod():
+    dialog = tkinter.Tk()
+    dialog.withdraw()
+    try:
+        name = simpledialog.askstring("Create New Mod", "Enter the name of the mod:", parent=dialog)
+        if name is None:
+            return
+        name = name.strip()
+        invalid_chars = '<>:"/\\|?*'
+        reserved_names = {"CON", "PRN", "AUX", "NUL"}
+        reserved_names.update(f"COM{i}" for i in range(1, 10))
+        reserved_names.update(f"LPT{i}" for i in range(1, 10))
+        if (not name or name in (".", "..") or any(ord(char) < 32 or char in invalid_chars for char in name)
+                or name.endswith((" ", ".")) or name.split(".")[0].upper() in reserved_names):
+            messagebox.showerror("Invalid Mod Name", "Enter a valid Windows folder name.", parent=dialog)
+            return
+
+        workspace = Path(__file__).resolve().parent / "Workspaces"
+        workspace.mkdir(parents=True, exist_ok=True)
+        mod_folder = workspace / name
+        try:
+            mod_folder.mkdir(exist_ok=False)
+        except FileExistsError:
+            messagebox.showerror("Mod Already Exists", f"A folder named '{name}' already exists in Workspaces.", parent=dialog)
+            return
+        messagebox.showinfo("Mod Created", f"Created mod folder:\n{mod_folder}", parent=dialog)
+    except OSError as exc:
+        messagebox.showerror("Could Not Create Mod", str(exc), parent=dialog)
+    finally:
+        dialog.destroy()
 
 
 def main():
@@ -55,13 +90,19 @@ def main():
         sidebar_layout.addWidget(button)
 
         page = QWidget()
-        page_layout = QVBoxLayout(page)
-        page_title = QLabel(page_name)
-        page_title.setObjectName("pageTitle")
-        page_title.setAlignment(Qt.AlignCenter)
-        page_layout.addStretch(1)
-        page_layout.addWidget(page_title, alignment=Qt.AlignCenter)
-        page_layout.addStretch(2)
+        if page_name == "Create":
+            page_layout = QVBoxLayout(page)
+            page_layout.setContentsMargins(32, 32, 32, 32)
+            page_layout.addStretch(1)
+            for action_name in ("Create New Mod", "Edit Existing Mod", "Import Mod"):
+                action_button = QPushButton(action_name)
+                action_button.setObjectName("createAction")
+                action_button.setMinimumSize(250, 56)
+                action_button.setMaximumWidth(360)
+                if action_name == "Create New Mod":
+                    action_button.clicked.connect(create_new_mod)
+                page_layout.addWidget(action_button, alignment=Qt.AlignHCenter)
+            page_layout.addStretch(1)
         content.addWidget(page)
 
     sidebar_layout.addStretch(1)
@@ -75,7 +116,9 @@ def main():
         QPushButton { background-color: #303746; color: #eef1f7; border: none; border-radius: 8px; padding: 10px 14px; text-align: left; font-size: 15px; }
         QPushButton:hover { background-color: #414b60; }
         QPushButton:checked { background-color: #4b6797; }
-        QLabel#pageTitle { color: #eef1f7; font-size: 30px; }
+        QPushButton#createAction { background-color: #101d38; border: 1px solid #263b63; border-radius: 10px; text-align: center; font-size: 16px; }
+        QPushButton#createAction:hover { background-color: #1b2e52; }
+        QPushButton#createAction:pressed { background-color: #0b1427; }
     """)
     window.setCentralWidget(root)
     window.show()
@@ -84,3 +127,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+

@@ -28,6 +28,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+python -c "import tkinter" >nul 2>&1
+if errorlevel 1 (
+    echo ERROR: Tkinter is missing from this Python installation.
+    echo Reinstall Python 3.12 with the Tcl/Tk and IDLE feature enabled.
+    pause
+    exit /b 1
+)
+
 if not exist "%~dp0Workspaces" mkdir "%~dp0Workspaces"
 if not exist "%~dp0local" mkdir "%~dp0local"
 
@@ -219,4 +227,6 @@ echo ===================================================
 pause
 if "%CHECK_FAIL%"=="0" exit /b 0
 exit /b 1
+
+
 
