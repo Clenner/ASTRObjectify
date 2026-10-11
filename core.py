@@ -12,6 +12,15 @@ from pathlib import Path
 from typing import Sequence
 
 
+def _clear_pycache() -> None:
+    cache = Path(__file__).resolve().parent / "__pycache__"
+    if cache.is_dir():
+        shutil.rmtree(cache, ignore_errors=True)
+
+
+_clear_pycache()
+
+
 @dataclass(frozen=True)
 class Check:
     name: str
@@ -19,6 +28,58 @@ class Check:
     detail: str
 
 
+def _validate_mod_name(name: str) -> str:
+    if not isinstance(name, str):
+        raise ValueError("Mod name must be text.")
+    name = name.strip()
+    invalid_chars = '<>:"/\\|?*'
+    reserved_names = {"CON", "PRN", "AUX", "NUL"}
+    reserved_names.update(f"COM{i}" for i in range(1, 10))
+    reserved_names.update(f"LPT{i}" for i in range(1, 10))
+    if (not name or name in (".", "..")
+            or any(ord(char) < 32 or char in invalid_chars for char in name)
+            or name.endswith((" ", "."))
+            or name.split(".")[0].upper() in reserved_names):
+        raise ValueError("Enter a valid Windows folder name for the mod.")
+    return name
+
+
+def _workspace_path(root: str | Path | None = None) -> Path:
+    project_root = Path(root).expanduser().resolve() if root else Path(__file__).resolve().parent
+    return project_root / "Workspaces"
+
+
+def create_mod_workspace(name: str, root: str | Path | None = None) -> Path:
+    """Create and return a new mod folder under AOY's Workspaces directory."""
+    name = _validate_mod_name(name)
+    workspace = _workspace_path(root)
+    workspace.mkdir(parents=True, exist_ok=True)
+    mod_folder = workspace / name
+    mod_folder.mkdir(exist_ok=False)
+    return mod_folder.resolve()
+
+
+def list_mod_workspaces(root: str | Path | None = None) -> list[str]:
+    """List existing mod folder names in AOY's Workspaces directory."""
+    workspace = _workspace_path(root)
+    if not workspace.is_dir():
+        return []
+    return sorted(
+        (item.name for item in workspace.iterdir() if item.is_dir() and not item.is_symlink()),
+        key=str.casefold,
+    )
+
+
+def get_mod_workspace(name: str, root: str | Path | None = None) -> Path:
+    """Resolve an existing mod folder contained directly in Workspaces."""
+    name = _validate_mod_name(name)
+    workspace = _workspace_path(root).resolve()
+    mod_folder = workspace / name
+    if mod_folder.is_symlink() or not mod_folder.is_dir():
+        raise FileNotFoundError(f"Mod folder not found in Workspaces: {name}")
+    if mod_folder.resolve().parent != workspace:
+        raise ValueError("Mod folder must be directly inside Workspaces.")
+    return mod_folder.resolve()
 def find_unreal_cmd() -> Path | None:
     """Find the UE 4.27 command-line editor, including AOY_UE_CMD override."""
     override = os.environ.get("AOY_UE_CMD")
@@ -212,5 +273,3 @@ def format_process_result(result: subprocess.CompletedProcess[str]) -> str:
 
 if __name__ == "__main__":
     print("This module provides AOY backend functions. Start interface.py to use AOY.")
-
-
