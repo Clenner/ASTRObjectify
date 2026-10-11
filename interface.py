@@ -1,22 +1,26 @@
-import sys
-import tkinter
-from tkinter import simpledialog
+try:
+    import sys
+    import tkinter
+    from tkinter import simpledialog
 
-import core
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (
-    QApplication,
-    QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QLabel,
-    QMainWindow,
-    QMessageBox,
-    QPushButton,
-    QStackedWidget,
-    QVBoxLayout,
-    QWidget,
-)
+    import core
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import (
+        QApplication,
+        QComboBox,
+        QDialog,
+        QDialogButtonBox,
+        QLabel,
+        QMainWindow,
+        QMessageBox,
+        QPushButton,
+       QStackedWidget,
+        QVBoxLayout,
+        QWidget,
+    )
+except:
+    print("FAILED TO IMPORT MODULES. PLEASE RUN THE INSTALLER AND THE README.")
+    sys.exit()
 
 
 ACTIONS = ("Create New Mod", "Edit Existing Mod", "Import Mod", "About", "Exit")
@@ -38,7 +42,6 @@ class AOYWindow(QMainWindow):
         self.screens.addWidget(self.workspace_screen)
 
         self.file_menu = self.menuBar().addMenu("File")
-        self.file_menu.setStyleSheet("QMenu { background-color: #222733; color: #eef1f7; } QMenu::item { padding: 7px 28px 7px 12px; } QMenu::item:selected { background-color: #303746; }")
         for label in ("Open", "New", "Save", "Save As"):
             self.file_menu.addAction(label)
         self.file_menu.addSeparator()
@@ -60,6 +63,9 @@ class AOYWindow(QMainWindow):
             QMenuBar { background-color: #222733; color: #eef1f7; }
             QMenuBar::item { background-color: #222733; padding: 4px 10px; border: 1px solid #303746; }
             QMenuBar::item:selected { background-color: #303746; }
+            QMenu { background-color: #222733; color: #eef1f7; }
+            QMenu::item { padding: 7px 28px 7px 12px; }
+            QMenu::item:selected { background-color: #303746; }
         """)
         self.show_home()
 
@@ -83,6 +89,8 @@ class AOYWindow(QMainWindow):
                 button.clicked.connect(self.create_new_mod)
             elif label == "Edit Existing Mod":
                 button.clicked.connect(self.edit_existing_mod)
+            elif label == "Exit":
+                button.clicked.connect(self.exit_app)
             layout.addWidget(button, alignment=Qt.AlignHCenter)
 
         layout.addStretch(1)
@@ -217,6 +225,13 @@ class AOYWindow(QMainWindow):
 
     def return_home(self):
         self.show_home()
+
+    def exit_app(self):
+        try:
+            print("\n\n\nHope you enjoyed!\n\n\n")
+        except (EOFError, OSError):
+            pass
+        sys.exit()
 
 
 def main():
