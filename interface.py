@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 
-ACTIONS = ("Create New Mod", "Edit Existing Mod", "Import Mod")
+ACTIONS = ("Create New Mod", "Edit Existing Mod", "Import Mod", "About", "Exit")
 
 
 class AOYWindow(QMainWindow):
@@ -44,6 +44,11 @@ class AOYWindow(QMainWindow):
         self.file_menu.addSeparator()
         exit_action = self.file_menu.addAction("Exit")
         exit_action.triggered.connect(self.return_home)
+
+        self.edit_menu = self.menuBar().addMenu("Edit")
+        edit_metafile_action = self.edit_menu.addAction("Edit Metafile")
+        edit_metafile_action.triggered.connect(self.edit_metafile)
+        self.edit_menu.addAction("Edit Metadata")
         self.menuBar().hide()
 
         self.setStyleSheet("""
@@ -147,6 +152,68 @@ class AOYWindow(QMainWindow):
             QMessageBox.critical(self, "Could Not Open Mod", str(exc))
             return
         self.open_mod_workspace(mod_folder)
+
+    def edit_metafile(self):
+        if self.active_mod is None:
+            return
+        try:
+            values = core.read_mod_metafile(self.active_mod)
+        except (ValueError, OSError) as exc:
+            QMessageBox.critical(self, "Could Not Read Metafile", str(exc))
+            return
+
+        dialog = tkinter.Tk()
+        dialog.title("Edit Metafile")
+        dialog.resizable(False, False)
+        dialog.configure(padx=18, pady=16)
+        fields = (
+            ("Priority", str(int(values.get("priority", 0)))),
+            ("Mod name / ID", str(values.get("mod_name", self.active_mod.name))),
+            ("Version", str(values.get("version", "0.1.0"))),
+        )
+        entries = {}
+        for row, (label, value) in enumerate(fields):
+            tkinter.Label(dialog, text=label).grid(row=row, column=0, sticky="w", padx=(0, 14), pady=6)
+            entry = tkinter.Entry(dialog, width=32)
+            entry.insert(0, value)
+            entry.grid(row=row, column=1, sticky="ew", pady=6)
+            entries[label] = entry
+
+        result = {}
+
+        def accept():
+            result["priority"] = entries["Priority"].get()
+            result["mod_name"] = entries["Mod name / ID"].get()
+            result["version"] = entries["Version"].get()
+            dialog.destroy()
+
+        def cancel():
+            dialog.destroy()
+
+        buttons = tkinter.Frame(dialog)
+        buttons.grid(row=len(fields), column=0, columnspan=2, sticky="e", pady=(12, 0))
+        tkinter.Button(buttons, text="OK", width=10, command=accept).pack(side="left", padx=(0, 8))
+        tkinter.Button(buttons, text="Cancel", width=10, command=cancel).pack(side="left")
+        dialog.protocol("WM_DELETE_WINDOW", cancel)
+        dialog.mainloop()
+        dialog.destroy()
+
+        if not result:
+            return
+        try:
+            workspace = core.update_mod_metafile(
+                self.active_mod,
+                result["priority"],
+                result["mod_name"],
+                result["version"],
+            )
+        except FileExistsError as exc:
+            QMessageBox.critical(self, "Name Already Exists", str(exc))
+            return
+        except (ValueError, OSError) as exc:
+            QMessageBox.critical(self, "Could Not Update Metafile", str(exc))
+            return
+        self.open_mod_workspace(workspace)
 
     def return_home(self):
         self.show_home()

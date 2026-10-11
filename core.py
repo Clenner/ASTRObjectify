@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -28,35 +29,112 @@ class Check:
     detail: str
 
 
-def _validate_mod_name(name: str) -> str:
-    if not isinstance(name, str):
-        raise ValueError("Mod name must be text.")
-    name = name.strip()
-    invalid_chars = '<>:"/\\|?*'
-    reserved_names = {"CON", "PRN", "AUX", "NUL"}
-    reserved_names.update(f"COM{i}" for i in range(1, 10))
-    reserved_names.update(f"LPT{i}" for i in range(1, 10))
-    if (not name or name in (".", "..")
-            or any(ord(char) < 32 or char in invalid_chars for char in name)
-            or name.endswith((" ", "."))
-            or name.split(".")[0].upper() in reserved_names):
-        raise ValueError("Enter a valid Windows folder name for the mod.")
-    return name
-
-
 def _workspace_path(root: str | Path | None = None) -> Path:
     project_root = Path(root).expanduser().resolve() if root else Path(__file__).resolve().parent
     return project_root / "Workspaces"
 
 
+def _resolve_workspace(workspace_path: str | Path, root: str | Path | None = None) -> Path:
+    raw_workspace = Path(workspace_path).expanduser()
+    workspace = raw_workspace.resolve()
+    workspaces_root = _workspace_path(root).resolve()
+    if raw_workspace.is_symlink() or workspace.parent != workspaces_root or not workspace.is_dir():
+        raise FileNotFoundError(f"Mod workspace not found directly inside Workspaces: {workspace}")
+    return workspace
+
+
+def _validate_mod_id(mod_id: str) -> str:
+    if not isinstance(mod_id, str):
+        raise ValueError("Mod name must be text.")
+    mod_id = mod_id.strip()
+    if not re.fullmatch(r"[A-Za-z0-9.]+", mod_id) or not any(char.isalnum() for char in mod_id):
+        raise ValueError("Mod name/ID may contain only ASCII letters, numbers, and periods.")
+    return mod_id
+
+
+def _validate_priority(priority: int | str) -> int:
+    try:
+        value = int(priority)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Priority must be a whole number from 0 to 799.") from exc
+    if isinstance(priority, bool) or not 0 <= value <= 799:
+        raise ValueError("Priority must be from 0 to 799. Priorities 800–999 are reserved.")
+    return value
+
+
+def _validate_mod_version(version: str) -> str:
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version.strip()):
+        raise ValueError("Version must have three number parts, such as 1.0.0.")
+    return version.strip()
+
+
+def _package_folder_name(priority: int, mod_id: str, version: str) -> str:
+    return f"{priority:03d}-{mod_id}-{version}"
+
+
+def pak_filename(priority: int | str, mod_id: str, version: str) -> str:
+    """Build the required Astroneer distributable .pak filename."""
+    priority_value = _validate_priority(priority)
+    mod_id = _validate_mod_id(mod_id)
+    version = _validate_mod_version(version)
+    return f"{_package_folder_name(priority_value, mod_id, version)}_P.pak"
+
+
+def _write_json(path: Path, value: dict) -> None:
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        temporary.write_text(json.dumps(value, indent=4, ensure_ascii=False) + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def read_mod_metafile(workspace_path: str | Path, root: str | Path | None = None) -> dict:
+    """Read AOY's project metafile, using defaults for older workspaces."""
+    workspace = _resolve_workspace(workspace_path, root)
+    metafile = workspace / "aoy.json"
+    if not metafile.is_file():
+        return {"priority": 0, "mod_name": workspace.name, "version": "0.1.0"}
+    try:
+        value = json.loads(metafile.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read AOY metafile: {metafile}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"AOY metafile must contain a JSON object: {metafile}")
+    return {
+        "priority": value.get("priority", 0),
+        "mod_name": value.get("mod_name", workspace.name),
+        "version": value.get("version", "0.1.0"),
+        "package_folder": value.get("package_folder"),
+    }
+
+
 def create_mod_workspace(name: str, root: str | Path | None = None) -> Path:
-    """Create and return a new mod folder under AOY's Workspaces directory."""
-    name = _validate_mod_name(name)
-    workspace = _workspace_path(root)
-    workspace.mkdir(parents=True, exist_ok=True)
-    mod_folder = workspace / name
-    mod_folder.mkdir(exist_ok=False)
-    return mod_folder.resolve()
+    """Create an AOY workspace and its initial package folder and metadata."""
+    mod_id = _validate_mod_id(name)
+    priority = 0
+    version = "0.1.0"
+    workspaces = _workspace_path(root)
+    workspaces.mkdir(parents=True, exist_ok=True)
+    workspace = workspaces / mod_id
+    workspace.mkdir(exist_ok=False)
+    package_name = _package_folder_name(priority, mod_id, version)
+    package = workspace / package_name
+    package.mkdir()
+    _write_json(workspace / "aoy.json", {
+        "priority": priority,
+        "mod_name": mod_id,
+        "version": version,
+        "package_folder": package_name,
+    })
+    _write_json(package / "metadata.json", {
+        "schema_version": 2,
+        "name": mod_id,
+        "mod_id": mod_id,
+        "version": version,
+    })
+    return workspace.resolve()
 
 
 def list_mod_workspaces(root: str | Path | None = None) -> list[str]:
@@ -71,15 +149,85 @@ def list_mod_workspaces(root: str | Path | None = None) -> list[str]:
 
 
 def get_mod_workspace(name: str, root: str | Path | None = None) -> Path:
-    """Resolve an existing mod folder contained directly in Workspaces."""
-    name = _validate_mod_name(name)
-    workspace = _workspace_path(root).resolve()
-    mod_folder = workspace / name
-    if mod_folder.is_symlink() or not mod_folder.is_dir():
-        raise FileNotFoundError(f"Mod folder not found in Workspaces: {name}")
-    if mod_folder.resolve().parent != workspace:
-        raise ValueError("Mod folder must be directly inside Workspaces.")
-    return mod_folder.resolve()
+    """Resolve an existing mod workspace contained directly in Workspaces."""
+    if not isinstance(name, str) or not name or name in (".", "..") or any(char in name for char in "/\\"):
+        raise ValueError("Mod workspace name must be a single folder name.")
+    workspace_root = _workspace_path(root).resolve()
+    workspace = workspace_root / name
+    if workspace.is_symlink() or not workspace.is_dir() or workspace.resolve().parent != workspace_root:
+        raise FileNotFoundError(f"Mod workspace not found in Workspaces: {name}")
+    return workspace.resolve()
+
+
+def update_mod_metafile(workspace_path: str | Path,
+                        priority: int | str,
+                        mod_name: str,
+                        version: str,
+                        root: str | Path | None = None) -> Path:
+    """Update project fields, metadata.json, and the inner package-folder name."""
+    workspace = _resolve_workspace(workspace_path, root)
+    priority_value = _validate_priority(priority)
+    mod_id = _validate_mod_id(mod_name)
+    version_value = _validate_mod_version(version)
+    metafile_data = read_mod_metafile(workspace, root)
+    old_package_name = metafile_data.get("package_folder")
+    old_package = None
+    if old_package_name:
+        if not isinstance(old_package_name, str) or Path(old_package_name).name != old_package_name:
+            raise ValueError("AOY metafile contains an invalid package folder name.")
+        old_package = workspace / old_package_name
+        if old_package.is_symlink() or (old_package.exists() and not old_package.is_dir()):
+            raise ValueError("The package folder recorded in aoy.json is invalid.")
+    elif not (workspace / "aoy.json").exists():
+        candidates = [item for item in workspace.iterdir() if item.is_dir() and not item.is_symlink()]
+        if len(candidates) == 1:
+            old_package = candidates[0]
+            old_package_name = old_package.name
+
+    new_package_name = _package_folder_name(priority_value, mod_id, version_value)
+    new_package = workspace / new_package_name
+    if old_package and old_package.exists() and old_package != new_package and new_package.exists():
+        raise FileExistsError(f"Package folder already exists: {new_package}")
+
+    new_workspace = workspace.parent / mod_id
+    if new_workspace != workspace and new_workspace.exists():
+        raise FileExistsError(f"A workspace named '{mod_id}' already exists.")
+
+    if old_package and old_package.exists() and old_package != new_package:
+        old_package.rename(new_package)
+    else:
+        new_package.mkdir(parents=True, exist_ok=True)
+
+    metadata_path = new_package / "metadata.json"
+    metadata = {}
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read mod metadata: {metadata_path}") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError(f"Mod metadata must contain a JSON object: {metadata_path}")
+    metadata.update({
+        "schema_version": 2,
+        "name": mod_id,
+        "mod_id": mod_id,
+        "version": version_value,
+    })
+    _write_json(metadata_path, metadata)
+
+    metafile_data.update({
+        "priority": priority_value,
+        "mod_name": mod_id,
+        "version": version_value,
+        "package_folder": new_package_name,
+    })
+    _write_json(workspace / "aoy.json", metafile_data)
+
+    if new_workspace != workspace:
+        workspace.rename(new_workspace)
+        workspace = new_workspace
+    return workspace.resolve()
+
 def find_unreal_cmd() -> Path | None:
     """Find the UE 4.27 command-line editor, including AOY_UE_CMD override."""
     override = os.environ.get("AOY_UE_CMD")
