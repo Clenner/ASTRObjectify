@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # ASTRObjectify (AOY) Linux Installer & Environment Setup
-# Ported from installer.bat for Linux systems.
+# Ported from WINDOWS.bat for Linux systems.
 # ==============================================================================
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+cd "$ROOT_DIR"
 
 echo "=== ASTRObjectify (AOY) Linux Installer ==="
-echo "Working directory: $SCRIPT_DIR"
+echo "Working directory: $ROOT_DIR"
 echo
 
 # ------------------------------------------------------------------------------
@@ -97,30 +98,30 @@ fi
 # ------------------------------------------------------------------------------
 # 3. Directory creation & legacy migrations
 # ------------------------------------------------------------------------------
-mkdir -p "$SCRIPT_DIR/Workspaces"
-mkdir -p "$SCRIPT_DIR/local"
+mkdir -p "$ROOT_DIR/Workspaces"
+mkdir -p "$ROOT_DIR/local"
 
-if [ ! -d "$SCRIPT_DIR/local/CAS" ] && [ -d "$SCRIPT_DIR/Workspaces/CAS" ]; then
+if [ ! -d "$ROOT_DIR/local/CAS" ] && [ -d "$ROOT_DIR/Workspaces/CAS" ]; then
     echo "Moving existing CAS files from Workspaces/ to local/..."
-    mv "$SCRIPT_DIR/Workspaces/CAS" "$SCRIPT_DIR/local/CAS"
+    mv "$ROOT_DIR/Workspaces/CAS" "$ROOT_DIR/local/CAS"
 fi
 
-if [ ! -d "$SCRIPT_DIR/local/UEAssetToolkit-Fixes" ] && [ -d "$SCRIPT_DIR/Workspaces/UEAssetToolkit-Fixes" ]; then
+if [ ! -d "$ROOT_DIR/local/UEAssetToolkit-Fixes" ] && [ -d "$ROOT_DIR/Workspaces/UEAssetToolkit-Fixes" ]; then
     echo "Moving existing UEAssetToolkit source from Workspaces/ to local/..."
-    mv "$SCRIPT_DIR/Workspaces/UEAssetToolkit-Fixes" "$SCRIPT_DIR/local/UEAssetToolkit-Fixes"
+    mv "$ROOT_DIR/Workspaces/UEAssetToolkit-Fixes" "$ROOT_DIR/local/UEAssetToolkit-Fixes"
 fi
 
-if [ ! -d "$SCRIPT_DIR/local/AOYAssetProject" ] && [ -d "$SCRIPT_DIR/Workspaces/AOYAssetProject" ]; then
+if [ ! -d "$ROOT_DIR/local/AOYAssetProject" ] && [ -d "$ROOT_DIR/Workspaces/AOYAssetProject" ]; then
     echo "Moving AOY's internal Unreal project from Workspaces/ to local/..."
-    mv "$SCRIPT_DIR/Workspaces/AOYAssetProject" "$SCRIPT_DIR/local/AOYAssetProject"
+    mv "$ROOT_DIR/Workspaces/AOYAssetProject" "$ROOT_DIR/local/AOYAssetProject"
 fi
 
 # ------------------------------------------------------------------------------
 # 4. CAS release files (UEAssetToolkitGenerator)
 # ------------------------------------------------------------------------------
-if [ ! -d "$SCRIPT_DIR/local/CAS" ]; then
+if [ ! -d "$ROOT_DIR/local/CAS" ]; then
     echo "Installing CAS release files..."
-    CAS_DEST="$SCRIPT_DIR/local/CAS"
+    CAS_DEST="$ROOT_DIR/local/CAS"
     mkdir -p "$CAS_DEST"
     CAS_URL=$(curl -sL -H "User-Agent: AOY-Installer" "https://api.github.com/repos/LongerWarrior/UEAssetToolkitGenerator/releases/latest" | "$PYTHON_BIN" -c "
 import sys, json
@@ -137,7 +138,7 @@ except Exception:
         echo "ERROR: No ZIP asset was found on the latest CAS release." >&2
         exit 1
     fi
-    CAS_ZIP="$SCRIPT_DIR/local/CAS_release.zip"
+    CAS_ZIP="$ROOT_DIR/local/CAS_release.zip"
     curl -L "$CAS_URL" -o "$CAS_ZIP"
     unzip -q -o "$CAS_ZIP" -d "$CAS_DEST"
     rm -f "$CAS_ZIP"
@@ -161,10 +162,10 @@ fi
 # ------------------------------------------------------------------------------
 # 6. UEAssetToolkit-Fixes plugins
 # ------------------------------------------------------------------------------
-if [ ! -d "$SCRIPT_DIR/local/UEAssetToolkit-Fixes" ]; then
+if [ ! -d "$ROOT_DIR/local/UEAssetToolkit-Fixes" ]; then
     echo "Downloading the Astroneer community UEAssetToolkit plugins..."
-    TEMP_DIR="$SCRIPT_DIR/local/UEAssetToolkit-temp"
-    ZIP_FILE="$SCRIPT_DIR/local/UEAssetToolkit.zip"
+    TEMP_DIR="$ROOT_DIR/local/UEAssetToolkit-temp"
+    ZIP_FILE="$ROOT_DIR/local/UEAssetToolkit.zip"
     mkdir -p "$TEMP_DIR"
     curl -L "https://api.github.com/repos/AstroTechies/UEAssetToolkit-Fixes/zipball" -o "$ZIP_FILE"
     unzip -q -o "$ZIP_FILE" -d "$TEMP_DIR"
@@ -174,14 +175,14 @@ if [ ! -d "$SCRIPT_DIR/local/UEAssetToolkit-Fixes" ]; then
         rm -rf "$TEMP_DIR" "$ZIP_FILE"
         exit 1
     fi
-    mv "$EXTRACTED_ROOT" "$SCRIPT_DIR/local/UEAssetToolkit-Fixes"
+    mv "$EXTRACTED_ROOT" "$ROOT_DIR/local/UEAssetToolkit-Fixes"
     rm -rf "$TEMP_DIR" "$ZIP_FILE"
 fi
 
 # ------------------------------------------------------------------------------
 # 7. Portable repak (Linux binary)
 # ------------------------------------------------------------------------------
-if [ ! -f "$SCRIPT_DIR/local/repak" ]; then
+if [ ! -f "$ROOT_DIR/local/repak" ]; then
     echo "Downloading portable repak for Linux into local/..."
     REPAK_URL=$(curl -sL -H "User-Agent: AOY-Installer" "https://api.github.com/repos/trumank/repak/releases/latest" | "$PYTHON_BIN" -c "
 import sys, json
@@ -200,9 +201,9 @@ except Exception:
         exit 1
     fi
 
-    REPAK_ARCHIVE="$SCRIPT_DIR/local/repak_dl"
+    REPAK_ARCHIVE="$ROOT_DIR/local/repak_dl"
     curl -L "$REPAK_URL" -o "$REPAK_ARCHIVE"
-    REPAK_TEMP="$SCRIPT_DIR/local/repak-temp"
+    REPAK_TEMP="$ROOT_DIR/local/repak-temp"
     mkdir -p "$REPAK_TEMP"
 
     if [[ "$REPAK_URL" == *.tar.xz ]]; then
@@ -220,10 +221,10 @@ except Exception:
         exit 1
     fi
 
-    cp "$REPAK_BIN" "$SCRIPT_DIR/local/repak"
-    chmod +x "$SCRIPT_DIR/local/repak"
+    cp "$REPAK_BIN" "$ROOT_DIR/local/repak"
+    chmod +x "$ROOT_DIR/local/repak"
     # Provide repak.exe alias so existing cross-platform code references continue to resolve
-    ln -sf "$SCRIPT_DIR/local/repak" "$SCRIPT_DIR/local/repak.exe"
+    ln -sf "$ROOT_DIR/local/repak" "$ROOT_DIR/local/repak.exe"
     rm -rf "$REPAK_TEMP" "$REPAK_ARCHIVE"
 fi
 
@@ -232,7 +233,7 @@ fi
 # ------------------------------------------------------------------------------
 echo "Creating repak wrappers in local/..."
 
-cat << 'EOF' > "$SCRIPT_DIR/local/unpak.sh"
+cat << 'EOF' > "$ROOT_DIR/local/unpak.sh"
 #!/usr/bin/env bash
 set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -251,10 +252,10 @@ else
     "$REPAK" unpack "$1" --output "$2"
 fi
 EOF
-chmod +x "$SCRIPT_DIR/local/unpak.sh"
-ln -sf "$SCRIPT_DIR/local/unpak.sh" "$SCRIPT_DIR/local/unpak.bat"
+chmod +x "$ROOT_DIR/local/unpak.sh"
+ln -sf "$ROOT_DIR/local/unpak.sh" "$ROOT_DIR/local/unpak.bat"
 
-cat << 'EOF' > "$SCRIPT_DIR/local/repack.sh"
+cat << 'EOF' > "$ROOT_DIR/local/repack.sh"
 #!/usr/bin/env bash
 set -e
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -273,20 +274,20 @@ else
     "$REPAK" pack "$1" "$2" --version V11
 fi
 EOF
-chmod +x "$SCRIPT_DIR/local/repack.sh"
-ln -sf "$SCRIPT_DIR/local/repack.sh" "$SCRIPT_DIR/local/repack.bat"
+chmod +x "$ROOT_DIR/local/repack.sh"
+ln -sf "$ROOT_DIR/local/repack.sh" "$ROOT_DIR/local/repack.bat"
 
 # ------------------------------------------------------------------------------
 # 9. Configure AOYAssetProject with AssetGenerator plugins
 # ------------------------------------------------------------------------------
-if [ -f "$SCRIPT_DIR/local/UEAssetToolkit-Fixes/AssetGenerator/AssetGenerator.uplugin" ] && \
-   [ -f "$SCRIPT_DIR/local/UEAssetToolkit-Fixes/AssetDumper/AssetDumper.uplugin" ]; then
+if [ -f "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetGenerator/AssetGenerator.uplugin" ] && \
+   [ -f "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetDumper/AssetDumper.uplugin" ]; then
     echo "Configuring AOY's Unreal project with the AssetGenerator plugins..."
-    PROJECT_DIR="$SCRIPT_DIR/local/AOYAssetProject"
+    PROJECT_DIR="$ROOT_DIR/local/AOYAssetProject"
     PLUGINS_DIR="$PROJECT_DIR/Plugins"
     mkdir -p "$PLUGINS_DIR"
-    cp -r "$SCRIPT_DIR/local/UEAssetToolkit-Fixes/AssetGenerator" "$PLUGINS_DIR/"
-    cp -r "$SCRIPT_DIR/local/UEAssetToolkit-Fixes/AssetDumper" "$PLUGINS_DIR/"
+    cp -r "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetGenerator" "$PLUGINS_DIR/"
+    cp -r "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetDumper" "$PLUGINS_DIR/"
 
     "$PYTHON_BIN" -c "
 import json
@@ -335,30 +336,30 @@ echo
 echo "================= AOY Setup Check ================="
 CHECK_FAIL=0
 
-if [ -f "$SCRIPT_DIR/local/repak" ]; then
+if [ -f "$ROOT_DIR/local/repak" ]; then
     echo "[OK] Portable repak is in local/."
 else
     echo "[MISSING] repak binary is not in local/."
     CHECK_FAIL=1
 fi
 
-if [ -f "$SCRIPT_DIR/local/unpak.sh" ]; then
+if [ -f "$ROOT_DIR/local/unpak.sh" ]; then
     echo "[OK] Portable unpak wrapper is in local/."
 else
     echo "[MISSING] unpak.sh is not in local/."
     CHECK_FAIL=1
 fi
 
-if [ -f "$SCRIPT_DIR/local/repack.sh" ]; then
+if [ -f "$ROOT_DIR/local/repack.sh" ]; then
     echo "[OK] Portable repack wrapper is in local/."
 else
     echo "[MISSING] repack.sh is not in local/."
     CHECK_FAIL=1
 fi
 
-if [ -f "$SCRIPT_DIR/local/AOYAssetProject/AOYAssetProject.uproject" ] && \
-   [ -f "$SCRIPT_DIR/local/AOYAssetProject/Plugins/AssetGenerator/AssetGenerator.uplugin" ] && \
-   [ -f "$SCRIPT_DIR/local/AOYAssetProject/Plugins/AssetDumper/AssetDumper.uplugin" ]; then
+if [ -f "$ROOT_DIR/local/AOYAssetProject/AOYAssetProject.uproject" ] && \
+   [ -f "$ROOT_DIR/local/AOYAssetProject/Plugins/AssetGenerator/AssetGenerator.uplugin" ] && \
+   [ -f "$ROOT_DIR/local/AOYAssetProject/Plugins/AssetDumper/AssetDumper.uplugin" ]; then
     echo "[OK] AssetGenerator and AssetDumper are enabled in AOYAssetProject."
 else
     echo "[MISSING] AOYAssetProject or its enabled toolkit plugins are not configured."
@@ -372,21 +373,21 @@ else
     CHECK_FAIL=1
 fi
 
-if [ -d "$SCRIPT_DIR/local/CAS" ]; then
+if [ -d "$ROOT_DIR/local/CAS" ]; then
     echo "[OK] CAS release files are staged in local/CAS."
 else
     echo "[MISSING] CAS files are not staged."
     CHECK_FAIL=1
 fi
 
-if [ -f "$SCRIPT_DIR/local/UEAssetToolkit-Fixes/AssetGenerator/AssetGenerator.uplugin" ]; then
+if [ -f "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetGenerator/AssetGenerator.uplugin" ]; then
     echo "[OK] UEAssetToolkit AssetGenerator source is staged in local/."
 else
     echo "[MISSING] UEAssetToolkit AssetGenerator plugin is not staged."
     CHECK_FAIL=1
 fi
 
-if [ -f "$SCRIPT_DIR/local/UEAssetToolkit-Fixes/AssetDumper/AssetDumper.uplugin" ]; then
+if [ -f "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetDumper/AssetDumper.uplugin" ]; then
     echo "[OK] UEAssetToolkit AssetDumper source is staged in local/."
 else
     echo "[MISSING] UEAssetToolkit AssetDumper plugin is not staged."

@@ -483,6 +483,125 @@ def update_mod_metadata(workspace_path: str | Path,
     return package.resolve()
 
 
+#: Game targets managed by integrator auto-rebuild.
+MASTER_ITEM_LIST = "/Game/Items/ItemTypes/MasterItemList"
+PRINTER_T1_SMALL = "/Game/Components_Small/Printer_Breadboards_T1"
+PRINTER_T2_MEDIUM = "/Game/Components_Medium/Printer_Breadboards_T2"
+_MANAGED_INTEGRATOR_TARGETS = (MASTER_ITEM_LIST, PRINTER_T1_SMALL, PRINTER_T2_MEDIUM)
+
+
+def _asset_ref_from_file(package_dir: Path, file: Path) -> str | None:
+    """Convert a cooked .uasset path to a /Game/... asset reference."""
+    if file.suffix.lower() != ".uasset":
+        return None
+    try:
+        rel = file.resolve().relative_to(package_dir.resolve())
+    except (ValueError, OSError):
+        return None
+    ref = rel.with_suffix("").as_posix()
+    if not re.fullmatch(r"Game/Mods/[A-Za-z0-9.]+/.+", ref):
+        return None
+    return "/" + ref
+
+
+def scan_mod_assets(package_dir: str | Path) -> tuple[list[str], list[str]]:
+    """Scan cooked .uassets, returning (item_types, blueprints) asset refs."""
+    package = Path(package_dir).expanduser().resolve()
+    item_types: set[str] = set()
+    blueprints: set[str] = set()
+    if not package.is_dir():
+        return [], []
+    for file in sorted(package.rglob("*.uasset")):
+        if file.is_symlink() or not file.is_file():
+            continue
+        ref = _asset_ref_from_file(package, file)
+        if ref is None:
+            continue
+        leaf = ref.rsplit("/", 1)[-1]
+        if leaf.endswith("_IT"):
+            item_types.add(ref)
+        elif leaf.endswith("_BP"):
+            blueprints.add(ref)
+    return sorted(item_types), sorted(blueprints)
+
+
+def build_integrator_entries(item_types: Sequence[str],
+                             blueprints: Sequence[str]) -> dict:
+    """Build item_list_entries from scanned asset refs.
+
+    Heuristic matching real mods: every _IT goes to MasterItemList;
+    _BP assets with tier 3+ in the name (``_T3_`` and up) go to the
+    medium T2 printer, everything else goes to the small T1 printer.
+    """
+    entries: dict = {}
+    clean_it = sorted({ref for ref in item_types if isinstance(ref, str) and ref.startswith("/Game/")})
+    if clean_it:
+        entries[MASTER_ITEM_LIST] = {"ItemTypes": clean_it}
+    small: list[str] = []
+    medium: list[str] = []
+    for ref in sorted({ref for ref in blueprints if isinstance(ref, str) and ref.startswith("/Game/")}):
+        leaf = ref.rsplit("/", 1)[-1]
+        match = re.search(r"_T(\d+)(?:_|$)", leaf)
+        tier = int(match.group(1)) if match else 1
+        (medium if tier >= 3 else small).append(ref)
+    if small:
+        entries[PRINTER_T1_SMALL] = {"PrinterComponent.Blueprints": small}
+    if medium:
+        entries[PRINTER_T2_MEDIUM] = {"PrinterComponent.Blueprints": medium}
+    return entries
+
+
+def rebuild_integrator(workspace_path: str | Path,
+                       root: str | Path | None = None) -> dict:
+    """Scan package .uassets and rewrite metadata.json integrator + sync.
+
+    Preserves every other metadata key and any unrelated integrator targets;
+    only the managed MasterItemList / printer entries are replaced (removed
+    when their asset list is now empty, so deleted assets drop out).
+    Returns the full integrator dict written.
+    """
+    workspace = _resolve_workspace(workspace_path, root)
+    metafile = read_mod_metafile(workspace, root)
+    package_name = metafile.get("package_folder")
+    if not package_name:
+        raise FileNotFoundError(f"No package folder found in workspace: {workspace}")
+    package = workspace / package_name
+    if not package.is_dir():
+        raise FileNotFoundError(f"Package folder not found: {package}")
+    item_types, blueprints = scan_mod_assets(package)
+    entries = build_integrator_entries(item_types, blueprints)
+
+    metadata_path = package / "metadata.json"
+    metadata: dict = {}
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read mod metadata: {metadata_path}") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError(f"Mod metadata must contain a JSON object: {metadata_path}")
+    metadata.setdefault("sync", "serverclient")
+    integrator = metadata.get("integrator")
+    if not isinstance(integrator, dict):
+        integrator = {}
+    item_entries = integrator.get("item_list_entries")
+    if not isinstance(item_entries, dict):
+        item_entries = {}
+    for target in _MANAGED_INTEGRATOR_TARGETS:
+        item_entries.pop(target, None)
+    item_entries.update(entries)
+    integrator["item_list_entries"] = item_entries
+    metadata["integrator"] = integrator
+    metadata.update({
+        "schema_version": 2,
+        "name": metafile.get("mod_name"),
+        "mod_id": metafile.get("mod_name"),
+        "version": metafile.get("version"),
+    })
+    _write_json(metadata_path, metadata)
+    return integrator
+
+
 def find_unreal_cmd() -> Path | None:
     """Find the UE 4.27 command-line editor, including AOY_UE_CMD override."""
     override = os.environ.get("AOY_UE_CMD")

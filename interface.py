@@ -323,6 +323,12 @@ class AOYWindow(QMainWindow):
             if not input_dir.is_dir():
                 raise FileNotFoundError(f"Package folder not found: {input_dir}")
 
+            try:
+                core.rebuild_integrator(self.active_mod)
+                meta = core.read_mod_metafile(self.active_mod)
+            except (ValueError, OSError) as exc:
+                raise RuntimeError(f"Could not auto-build integrator: {exc}") from exc
+
             pak_name = core.pak_filename(meta["priority"], meta["mod_name"], meta["version"])
             versions_dir = self.active_mod / "versions"
             versions_dir.mkdir(parents=True, exist_ok=True)
