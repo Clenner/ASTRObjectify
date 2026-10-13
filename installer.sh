@@ -25,7 +25,7 @@ for tool in curl unzip tar xz; do
 done
 
 # ------------------------------------------------------------------------------
-# 2. Python 3 check & package installation
+# 2. Python 3 auto-install & package installation
 # ------------------------------------------------------------------------------
 PYTHON_BIN=""
 for candidate in python3 python; do
@@ -38,12 +38,47 @@ for candidate in python3 python; do
 done
 
 if [ -z "$PYTHON_BIN" ]; then
-    echo "ERROR: Python 3.10+ is required but was not found." >&2
-    echo "Please install Python 3 (e.g. sudo apt install python3 python3-pip python3-tk)." >&2
-    exit 1
+    echo "Python 3.10+ not found. Attempting to install..."
+    if command -v apt-get >/dev/null 2>&1; then
+        echo "Detected apt — installing python3, python3-pip..."
+        sudo apt-get update -qq
+        sudo apt-get install -y python3 python3-pip
+    elif command -v dnf >/dev/null 2>&1; then
+        echo "Detected dnf — installing python3, python3-pip..."
+        sudo dnf install -y python3 python3-pip
+    elif command -v pacman >/dev/null 2>&1; then
+        echo "Detected pacman — installing python, python-pip..."
+        sudo pacman -Sy --noconfirm python python-pip
+    elif command -v zypper >/dev/null 2>&1; then
+        echo "Detected zypper — installing python3, python3-pip..."
+        sudo zypper install -y python3 python3-pip
+    else
+        echo "ERROR: Could not detect a supported package manager (apt, dnf, pacman, zypper)." >&2
+        echo "Please install Python 3.10+ manually and re-run this installer." >&2
+        exit 1
+    fi
+
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1; then
+            if "$candidate" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>/dev/null; then
+                PYTHON_BIN="$candidate"
+                break
+            fi
+        fi
+    done
+
+    if [ -z "$PYTHON_BIN" ]; then
+        echo "ERROR: Python 3.10+ installation failed or is still not on PATH." >&2
+        exit 1
+    fi
 fi
 
 echo "Using Python: $($PYTHON_BIN --version) ($PYTHON_BIN)"
+
+# Bootstrap pip in case it's missing
+"$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
+"$PYTHON_BIN" -m pip install --upgrade pip --quiet 2>/dev/null || \
+    "$PYTHON_BIN" -m pip install --upgrade pip --user --quiet 2>/dev/null || true
 
 # Check PySide6
 if ! "$PYTHON_BIN" -c "import PySide6" >/dev/null 2>&1; then
@@ -57,16 +92,6 @@ if ! "$PYTHON_BIN" -c "import PySide6" >/dev/null 2>&1; then
             }
         fi
     fi
-fi
-
-# Check Tkinter
-if ! "$PYTHON_BIN" -c "import tkinter" >/dev/null 2>&1; then
-    echo "ERROR: Tkinter is missing from this Python installation." >&2
-    echo "Install Tkinter using your package manager:" >&2
-    echo "  Debian/Ubuntu: sudo apt install python3-tk" >&2
-    echo "  Fedora:        sudo dnf install python3-tkinter" >&2
-    echo "  Arch Linux:    sudo pacman -S tk" >&2
-    exit 1
 fi
 
 # ------------------------------------------------------------------------------

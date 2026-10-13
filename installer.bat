@@ -11,27 +11,28 @@ if errorlevel 1 (
 
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo Installing Python 3.12...
-    winget install --exact --id Python.Python.3.12 --scope user --silent --accept-package-agreements --accept-source-agreements
-    if errorlevel 1 (
-        echo ERROR: Python installation failed.
-        pause
-        exit /b 1
+    py --version >nul 2>&1
+    if not errorlevel 1 (
+        echo Found Python via Windows py launcher.
+        doskey python=py $*
+        set "PYTHON_CMD=py"
+    ) else (
+        echo Installing Python 3.12...
+        winget install --exact --id Python.Python.3.12 --scope user --silent --accept-package-agreements --accept-source-agreements
+        if errorlevel 1 (
+            echo ERROR: Python installation failed.
+            pause
+            exit /b 1
+        )
+        set "PATH=%LocalAppData%\Programs\Python\Python312;%LocalAppData%\Programs\Python\Python312\Scripts;%PATH%"
     )
-    set "PATH=%LocalAppData%\Programs\Python\Python312;%LocalAppData%\Programs\Python\Python312\Scripts;%PATH%"
 )
 
+python -m ensurepip --upgrade >nul 2>&1
+python -m pip install --upgrade pip --quiet
 python -m pip install PySide6
 if errorlevel 1 (
     echo ERROR: PySide6 installation failed.
-    pause
-    exit /b 1
-)
-
-python -c "import tkinter" >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Tkinter is missing from this Python installation.
-    echo Reinstall Python 3.12 with the Tcl/Tk and IDLE feature enabled.
     pause
     exit /b 1
 )

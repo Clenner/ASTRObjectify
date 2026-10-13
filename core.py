@@ -22,6 +22,128 @@ def _clear_pycache() -> None:
 _clear_pycache()
 
 
+def find_game_pak() -> Path | None:
+    """Find the Astroneer main game .pak, including AOY_GAME_PAK override."""
+    override = os.environ.get("AOY_GAME_PAK")
+    if override and Path(override).expanduser().is_file():
+        return Path(override).expanduser().resolve()
+
+    pak_names = ("Astro-WindowsNoEditor.pak", "pakchunk0-WindowsNoEditor.pak")
+    search_dirs: list[Path] = []
+
+    steam_env = os.environ.get("ASTRONEER_PATH")
+    if steam_env:
+        search_dirs.append(Path(steam_env).expanduser() / "Astro/Content/Paks")
+
+    for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+        base = os.environ.get(env_name)
+        if base:
+            search_dirs.append(Path(base) / "Steam/steamapps/common/ASTRONEER/Astro/Content/Paks")
+
+    for drive in ("C:/", "D:/", "E:/", "F:/"):
+        search_dirs.append(Path(drive) / "SteamLibrary/steamapps/common/ASTRONEER/Astro/Content/Paks")
+        search_dirs.append(Path(drive) / "Steam/steamapps/common/ASTRONEER/Astro/Content/Paks")
+        search_dirs.append(Path(drive) / "Program Files (x86)/Steam/steamapps/common/ASTRONEER/Astro/Content/Paks")
+
+    for directory in search_dirs:
+        for pak_name in pak_names:
+            candidate = directory / pak_name
+            if candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
+def _find_repak(custom_path: str | Path | None = None) -> Path | None:
+    """Find the portable repak executable in local/ or on PATH."""
+    if custom_path:
+        custom = Path(custom_path).expanduser().resolve()
+        if custom.is_file():
+            return custom
+    local_dir = Path(__file__).resolve().parent / "local"
+    candidates = [
+        local_dir / "repak.exe",
+        local_dir / "repak",
+    ]
+    which_repak = shutil.which("repak")
+    if which_repak:
+        candidates.append(Path(which_repak))
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def get_extracted_game_path(root: str | Path | None = None) -> Path:
+    """Return the path to the extracted game directory in local/Astro-WindowsNoEditor."""
+    base = Path(root).expanduser().resolve() if root else Path(__file__).resolve().parent
+    return (base / "local" / "Astro-WindowsNoEditor").resolve()
+
+
+def _ensure_game_extracted() -> Path | None:
+    """Extract game files into local/Astro-WindowsNoEditor, auto-updating on game patches."""
+    target_dir = get_extracted_game_path()
+    game_pak = find_game_pak()
+    stamp_file = target_dir / ".pak_stamp.json"
+
+    if game_pak and target_dir.is_dir() and any(target_dir.iterdir()):
+        if stamp_file.is_file():
+            try:
+                stamp = json.loads(stamp_file.read_text(encoding="utf-8"))
+                pak_stat = game_pak.stat()
+                if stamp.get("mtime") == pak_stat.st_mtime and stamp.get("size") == pak_stat.st_size:
+                    return target_dir
+                print("Astroneer game update detected! Re-extracting game files...")
+            except (OSError, json.JSONDecodeError):
+                pass
+        else:
+            try:
+                pak_stat = game_pak.stat()
+                stamp_file.write_text(
+                    json.dumps({"mtime": pak_stat.st_mtime, "size": pak_stat.st_size}, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+            return target_dir
+
+    elif not game_pak and target_dir.is_dir() and any(target_dir.iterdir()):
+        return target_dir
+
+    repak = _find_repak()
+    if not repak or not game_pak:
+        return target_dir if target_dir.is_dir() and any(target_dir.iterdir()) else None
+
+    if target_dir.exists():
+        shutil.rmtree(target_dir, ignore_errors=True)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        print(f"Extracting Astroneer game files into {target_dir}...")
+        subprocess.run(
+            [str(repak), "unpack", str(game_pak), "--output", str(target_dir)],
+            capture_output=True,
+            check=False,
+        )
+    except OSError:
+        return None
+
+    if target_dir.is_dir() and any(target_dir.iterdir()):
+        print("Game files extraction complete.")
+        try:
+            pak_stat = game_pak.stat()
+            stamp_file.write_text(
+                json.dumps({"mtime": pak_stat.st_mtime, "size": pak_stat.st_size}, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return target_dir
+    return None
+
+
+_ensure_game_extracted()
+
+
 @dataclass(frozen=True)
 class Check:
     name: str
@@ -36,10 +158,11 @@ def _workspace_path(root: str | Path | None = None) -> Path:
 
 def _resolve_workspace(workspace_path: str | Path, root: str | Path | None = None) -> Path:
     raw_workspace = Path(workspace_path).expanduser()
+    if raw_workspace.is_symlink():
+        raise FileNotFoundError(f"Mod workspace not found: {raw_workspace}")
     workspace = raw_workspace.resolve()
-    workspaces_root = _workspace_path(root).resolve()
-    if raw_workspace.is_symlink() or workspace.parent != workspaces_root or not workspace.is_dir():
-        raise FileNotFoundError(f"Mod workspace not found directly inside Workspaces: {workspace}")
+    if not workspace.is_dir():
+        raise FileNotFoundError(f"Mod workspace not found: {workspace}")
     return workspace
 
 
@@ -72,6 +195,30 @@ def _package_folder_name(priority: int, mod_id: str, version: str) -> str:
     return f"{priority:03d}-{mod_id}-{version}"
 
 
+#: Keys in metadata.json that are owned by the mod identity fields
+#: (priority/name/version) at the top of the Edit Metadata dialog.
+#: The metadata editor must not change these; they are forced from the
+#: package folder name / metafile on every save.
+METAFILE_CONTROLLED_KEYS = ("name", "mod_id", "version")
+
+#: Blank marker file inside each workspace. Users open a mod by selecting
+#: this file instead of picking a folder, which avoids folder-picker confusion.
+SELECT_MARKER = "SELECT.HERE"
+
+
+def _find_package_dir(workspace: Path) -> Path | None:
+    """Return the package folder inside a workspace, if one can be found."""
+    for item in workspace.iterdir():
+        if item.is_dir() and not item.is_symlink():
+            match = re.fullmatch(r"([0-9]{1,3})-(.+)-([0-9]+\.[0-9]+\.[0-9]+)", item.name)
+            if match:
+                return item
+    candidates = [item for item in workspace.iterdir() if item.is_dir() and not item.is_symlink()]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
 def pak_filename(priority: int | str, mod_id: str, version: str) -> str:
     """Build the required Astroneer distributable .pak filename."""
     priority_value = _validate_priority(priority)
@@ -91,22 +238,51 @@ def _write_json(path: Path, value: dict) -> None:
 
 
 def read_mod_metafile(workspace_path: str | Path, root: str | Path | None = None) -> dict:
-    """Read AOY's project metafile, using defaults for older workspaces."""
+    """Read project metadata directly from the package folder name and metadata.json."""
     workspace = _resolve_workspace(workspace_path, root)
-    metafile = workspace / "aoy.json"
-    if not metafile.is_file():
-        return {"priority": 0, "mod_name": workspace.name, "version": "0.1.0"}
-    try:
-        value = json.loads(metafile.read_text(encoding="utf-8-sig"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Could not read AOY metafile: {metafile}") from exc
-    if not isinstance(value, dict):
-        raise ValueError(f"AOY metafile must contain a JSON object: {metafile}")
+
+    # Clean up obsolete aoy.json if present
+    legacy_metafile = workspace / "aoy.json"
+    if legacy_metafile.is_file():
+        try:
+            legacy_metafile.unlink()
+        except OSError:
+            pass
+
+    package_dir = None
+    priority = 0
+    mod_name = workspace.name
+    version = "0.1.0"
+
+    for item in workspace.iterdir():
+        if item.is_dir() and not item.is_symlink():
+            match = re.fullmatch(r"([0-9]{1,3})-(.+)-([0-9]+\.[0-9]+\.[0-9]+)", item.name)
+            if match:
+                package_dir = item
+                priority = int(match.group(1))
+                mod_name = match.group(2)
+                version = match.group(3)
+                break
+
+    if package_dir is None:
+        candidates = [item for item in workspace.iterdir() if item.is_dir() and not item.is_symlink()]
+        if len(candidates) == 1:
+            package_dir = candidates[0]
+
+    if package_dir and (package_dir / "metadata.json").is_file():
+        try:
+            meta = json.loads((package_dir / "metadata.json").read_text(encoding="utf-8-sig"))
+            if isinstance(meta, dict):
+                mod_name = meta.get("mod_id") or meta.get("name") or mod_name
+                version = meta.get("version") or version
+        except (OSError, json.JSONDecodeError):
+            pass
+
     return {
-        "priority": value.get("priority", 0),
-        "mod_name": value.get("mod_name", workspace.name),
-        "version": value.get("version", "0.1.0"),
-        "package_folder": value.get("package_folder"),
+        "priority": priority,
+        "mod_name": mod_name,
+        "version": version,
+        "package_folder": package_dir.name if package_dir else None,
     }
 
 
@@ -122,19 +298,28 @@ def create_mod_workspace(name: str, root: str | Path | None = None) -> Path:
     package_name = _package_folder_name(priority, mod_id, version)
     package = workspace / package_name
     package.mkdir()
-    _write_json(workspace / "aoy.json", {
-        "priority": priority,
-        "mod_name": mod_id,
-        "version": version,
-        "package_folder": package_name,
-    })
     _write_json(package / "metadata.json", {
         "schema_version": 2,
         "name": mod_id,
         "mod_id": mod_id,
         "version": version,
     })
+    try:
+        (workspace / SELECT_MARKER).touch(exist_ok=True)
+    except OSError:
+        pass
     return workspace.resolve()
+
+
+def ensure_select_marker(workspace_path: str | Path, root: str | Path | None = None) -> Path:
+    """Create the blank SELECT.HERE marker inside a workspace if missing."""
+    workspace = _resolve_workspace(workspace_path, root)
+    marker = workspace / SELECT_MARKER
+    try:
+        marker.touch(exist_ok=True)
+    except OSError as exc:
+        raise OSError(f"Could not create {SELECT_MARKER} in workspace: {workspace}") from exc
+    return marker.resolve()
 
 
 def list_mod_workspaces(root: str | Path | None = None) -> list[str]:
@@ -173,12 +358,10 @@ def update_mod_metafile(workspace_path: str | Path,
     old_package_name = metafile_data.get("package_folder")
     old_package = None
     if old_package_name:
-        if not isinstance(old_package_name, str) or Path(old_package_name).name != old_package_name:
-            raise ValueError("AOY metafile contains an invalid package folder name.")
         old_package = workspace / old_package_name
         if old_package.is_symlink() or (old_package.exists() and not old_package.is_dir()):
-            raise ValueError("The package folder recorded in aoy.json is invalid.")
-    elif not (workspace / "aoy.json").exists():
+            raise ValueError("The package folder is invalid.")
+    else:
         candidates = [item for item in workspace.iterdir() if item.is_dir() and not item.is_symlink()]
         if len(candidates) == 1:
             old_package = candidates[0]
@@ -215,18 +398,90 @@ def update_mod_metafile(workspace_path: str | Path,
     })
     _write_json(metadata_path, metadata)
 
-    metafile_data.update({
-        "priority": priority_value,
-        "mod_name": mod_id,
-        "version": version_value,
-        "package_folder": new_package_name,
-    })
-    _write_json(workspace / "aoy.json", metafile_data)
+    # Remove obsolete aoy.json if present
+    legacy_metafile = workspace / "aoy.json"
+    if legacy_metafile.is_file():
+        try:
+            legacy_metafile.unlink()
+        except OSError:
+            pass
 
     if new_workspace != workspace:
         workspace.rename(new_workspace)
         workspace = new_workspace
     return workspace.resolve()
+
+
+def read_mod_metadata(workspace_path: str | Path, root: str | Path | None = None) -> dict:
+    """Read metadata.json plus the metafile-controlled name/version.
+
+    Returns {"package_folder": str, "metadata": dict, "controlled": dict}.
+    The ``controlled`` mapping holds the name/mod_id/version owned by the
+    metafile; callers must display those read-only.
+    """
+    workspace = _resolve_workspace(workspace_path, root)
+    metafile = read_mod_metafile(workspace, root)
+    package_name = metafile.get("package_folder")
+    if not package_name:
+        raise FileNotFoundError(f"No package folder found in workspace: {workspace}")
+    package = workspace / package_name
+    if not package.is_dir():
+        raise FileNotFoundError(f"Package folder not found: {package}")
+    metadata_path = package / "metadata.json"
+    metadata: dict = {}
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read mod metadata: {metadata_path}") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError(f"Mod metadata must contain a JSON object: {metadata_path}")
+    return {
+        "package_folder": package_name,
+        "metadata": metadata,
+        "controlled": {
+            "name": metafile.get("mod_name"),
+            "mod_id": metafile.get("mod_name"),
+            "version": metafile.get("version"),
+        },
+    }
+
+
+def update_mod_metadata(workspace_path: str | Path,
+                        editable_fields: dict,
+                        root: str | Path | None = None) -> Path:
+    """Write metadata.json, forcing metafile-controlled name/version.
+
+    ``editable_fields`` holds only the non-controlled keys the user edited.
+    Any name/mod_id/version entries in it are ignored; the metafile values win.
+    Other existing non-controlled keys not in ``editable_fields`` are removed,
+    so the metadata editor can delete fields.
+    """
+    if not isinstance(editable_fields, dict):
+        raise ValueError("Metadata fields must be a mapping.")
+    workspace = _resolve_workspace(workspace_path, root)
+    metafile = read_mod_metafile(workspace, root)
+    package_name = metafile.get("package_folder")
+    if not package_name:
+        raise FileNotFoundError(f"No package folder found in workspace: {workspace}")
+    package = workspace / package_name
+    if not package.is_dir():
+        raise FileNotFoundError(f"Package folder not found: {package}")
+    cleaned = {key: value for key, value in editable_fields.items()
+               if key not in METAFILE_CONTROLLED_KEYS}
+    for key in cleaned:
+        if not isinstance(key, str) or not key.strip() or key.strip() != key:
+            raise ValueError(f"Invalid metadata key: {key!r}")
+    new_metadata = dict(cleaned)
+    new_metadata.update({
+        "schema_version": 2,
+        "name": metafile.get("mod_name"),
+        "mod_id": metafile.get("mod_name"),
+        "version": metafile.get("version"),
+    })
+    _write_json(package / "metadata.json", new_metadata)
+    return package.resolve()
+
 
 def find_unreal_cmd() -> Path | None:
     """Find the UE 4.27 command-line editor, including AOY_UE_CMD override."""
@@ -328,6 +583,15 @@ def check_setup(root: str | Path | None = None) -> list[Check]:
     checks.append(Check(".NET 6 Desktop Runtime", runtime_ok,
                         "Runtime detected" if runtime_ok else "Not detected on PATH"))
 
+    game_pak = find_game_pak()
+    checks.append(Check("Astroneer game pak", game_pak is not None,
+                        str(game_pak) if game_pak else "Astro-WindowsNoEditor.pak not found"))
+
+    extracted_dir = local / "Astro-WindowsNoEditor"
+    extracted_ready = extracted_dir.is_dir() and any(extracted_dir.iterdir())
+    checks.append(Check("Extracted game files", extracted_ready,
+                        str(extracted_dir) if extracted_ready else "Not extracted in local/Astro-WindowsNoEditor"))
+
     ue_cmd = find_unreal_cmd()
     checks.append(Check("Unreal Engine 4.27", ue_cmd is not None,
                         str(ue_cmd) if ue_cmd else "UE4Editor-Cmd.exe not found"))
@@ -384,12 +648,11 @@ def pack_pak(input_directory: str | Path, output_pak: str | Path,
              version: str = "V11",
              timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     """Pack a directory into a .pak archive with AOY's portable repak binary."""
-    root = Path(__file__).resolve().parent / "local"
-    repak = Path(repak_path).expanduser() if repak_path else root / "repak.exe"
+    repak = _find_repak(repak_path)
     source = Path(input_directory).expanduser().resolve()
     destination = Path(output_pak).expanduser().resolve()
-    if not repak.is_file():
-        raise FileNotFoundError(f"repak executable not found: {repak}")
+    if not repak or not repak.is_file():
+        raise FileNotFoundError(f"repak executable not found: {repak or 'repak'}")
     if not source.is_dir():
         raise FileNotFoundError(f"Pak input directory not found: {source}")
     if destination.suffix.lower() != ".pak":
@@ -402,12 +665,11 @@ def unpack_pak(input_pak: str | Path, output_directory: str | Path,
                repak_path: str | Path | None = None,
                timeout: int | None = None) -> subprocess.CompletedProcess[str]:
     """Extract a .pak archive with AOY's portable repak binary."""
-    root = Path(__file__).resolve().parent / "local"
-    repak = Path(repak_path).expanduser() if repak_path else root / "repak.exe"
+    repak = _find_repak(repak_path)
     archive = Path(input_pak).expanduser().resolve()
     output = Path(output_directory).expanduser().resolve()
-    if not repak.is_file():
-        raise FileNotFoundError(f"repak executable not found: {repak}")
+    if not repak or not repak.is_file():
+        raise FileNotFoundError(f"repak executable not found: {repak or 'repak'}")
     if not archive.is_file():
         raise FileNotFoundError(f"Pak file not found: {archive}")
     output.mkdir(parents=True, exist_ok=True)
