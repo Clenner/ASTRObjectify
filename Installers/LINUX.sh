@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# ASTRObjectify (AOY) Linux Installer & Environment Setup
-# Ported from WINDOWS.bat for Linux systems.
-# ==============================================================================
 
 set -uo pipefail
 
@@ -14,9 +10,6 @@ echo "=== ASTRObjectify (AOY) Linux Installer ==="
 echo "Working directory: $ROOT_DIR"
 echo
 
-# ------------------------------------------------------------------------------
-# 1. System tool dependencies check (curl, unzip, tar, xz)
-# ------------------------------------------------------------------------------
 for tool in curl unzip tar xz; do
     if ! command -v "$tool" >/dev/null 2>&1; then
         echo "ERROR: '$tool' is required but not installed." >&2
@@ -25,9 +18,6 @@ for tool in curl unzip tar xz; do
     fi
 done
 
-# ------------------------------------------------------------------------------
-# 2. Python 3 auto-install & package installation
-# ------------------------------------------------------------------------------
 PYTHON_BIN=""
 for candidate in python3 python; do
     if command -v "$candidate" >/dev/null 2>&1; then
@@ -76,12 +66,30 @@ fi
 
 echo "Using Python: $($PYTHON_BIN --version) ($PYTHON_BIN)"
 
-# Bootstrap pip in case it's missing
-"$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
+if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+    echo "pip not found. Attempting to install..."
+    "$PYTHON_BIN" -m ensurepip --upgrade >/dev/null 2>&1 || true
+    if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y python3-pip python3-venv
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y python3-pip
+        elif command -v pacman >/dev/null 2>&1; then
+            sudo pacman -Sy --noconfirm python-pip
+        elif command -v zypper >/dev/null 2>&1; then
+            sudo zypper install -y python3-pip
+        fi
+    fi
+    if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+        echo "ERROR: pip is still missing for $PYTHON_BIN." >&2
+        echo "Install it manually (e.g. sudo apt install python3-pip python3-venv) and re-run." >&2
+        exit 1
+    fi
+fi
 "$PYTHON_BIN" -m pip install --upgrade pip --quiet 2>/dev/null || \
     "$PYTHON_BIN" -m pip install --upgrade pip --user --quiet 2>/dev/null || true
 
-# Check PySide6
 if ! "$PYTHON_BIN" -c "import PySide6" >/dev/null 2>&1; then
     echo "Installing PySide6..."
     if ! "$PYTHON_BIN" -m pip install PySide6 --quiet 2>/dev/null; then
@@ -95,9 +103,6 @@ if ! "$PYTHON_BIN" -c "import PySide6" >/dev/null 2>&1; then
     fi
 fi
 
-# ------------------------------------------------------------------------------
-# 3. Directory creation & legacy migrations
-# ------------------------------------------------------------------------------
 mkdir -p "$ROOT_DIR/Workspaces"
 mkdir -p "$ROOT_DIR/local"
 
@@ -116,9 +121,6 @@ if [ ! -d "$ROOT_DIR/local/AOYAssetProject" ] && [ -d "$ROOT_DIR/Workspaces/AOYA
     mv "$ROOT_DIR/Workspaces/AOYAssetProject" "$ROOT_DIR/local/AOYAssetProject"
 fi
 
-# ------------------------------------------------------------------------------
-# 4. CAS release files (UEAssetToolkitGenerator)
-# ------------------------------------------------------------------------------
 if [ ! -d "$ROOT_DIR/local/CAS" ]; then
     echo "Installing CAS release files..."
     CAS_DEST="$ROOT_DIR/local/CAS"
@@ -144,9 +146,6 @@ except Exception:
     rm -f "$CAS_ZIP"
 fi
 
-# ------------------------------------------------------------------------------
-# 5. .NET 6 Runtime check
-# ------------------------------------------------------------------------------
 DOTNET_FOUND=0
 if command -v dotnet >/dev/null 2>&1; then
     if dotnet --list-runtimes 2>/dev/null | grep -q -E "Microsoft\.(WindowsDesktop|NETCore)\.App 6\."; then
@@ -154,14 +153,29 @@ if command -v dotnet >/dev/null 2>&1; then
     fi
 fi
 if [ "$DOTNET_FOUND" -eq 0 ]; then
+    echo ".NET 6 runtime not detected. Installing locally via dotnet-install script..."
+    DOTNET_DIR="$HOME/.dotnet"
+    mkdir -p "$DOTNET_DIR"
+    if curl -sSL "https://dot.net/v1/dotnet-install.sh" -o /tmp/dotnet-install.sh; then
+        bash /tmp/dotnet-install.sh --channel 6.0 --runtime dotnet --install-dir "$DOTNET_DIR" --no-path >/dev/null 2>&1 || true
+        rm -f /tmp/dotnet-install.sh
+    fi
+    export PATH="$DOTNET_DIR:$PATH"
+    export DOTNET_ROOT="$DOTNET_DIR"
+    if command -v dotnet >/dev/null 2>&1; then
+        if dotnet --list-runtimes 2>/dev/null | grep -q -E "Microsoft\.(WindowsDesktop|NETCore)\.App 6\."; then
+            DOTNET_FOUND=1
+            echo "Installed .NET 6 runtime to $DOTNET_DIR."
+            echo "Add it to future terminals with: export PATH=\"\$HOME/.dotnet:\$PATH\""
+        fi
+    fi
+fi
+if [ "$DOTNET_FOUND" -eq 0 ]; then
     echo "NOTE: .NET 6 runtime was not detected on PATH."
     echo "If running CAS (UEAssetToolkitGenerator), .NET 6 is required."
-    echo "You can install it via your distro's package manager or Microsoft's dotnet-install script."
+    echo "Install it manually (e.g. rerun this installer) or via Microsoft's dotnet-install script."
 fi
 
-# ------------------------------------------------------------------------------
-# 6. UEAssetToolkit-Fixes plugins
-# ------------------------------------------------------------------------------
 if [ ! -d "$ROOT_DIR/local/UEAssetToolkit-Fixes" ]; then
     echo "Downloading the Astroneer community UEAssetToolkit plugins..."
     TEMP_DIR="$ROOT_DIR/local/UEAssetToolkit-temp"
@@ -179,9 +193,6 @@ if [ ! -d "$ROOT_DIR/local/UEAssetToolkit-Fixes" ]; then
     rm -rf "$TEMP_DIR" "$ZIP_FILE"
 fi
 
-# ------------------------------------------------------------------------------
-# 7. Portable repak (Linux binary)
-# ------------------------------------------------------------------------------
 if [ ! -f "$ROOT_DIR/local/repak" ]; then
     echo "Downloading portable repak for Linux into local/..."
     REPAK_URL=$(curl -sL -H "User-Agent: AOY-Installer" "https://api.github.com/repos/trumank/repak/releases/latest" | "$PYTHON_BIN" -c "
@@ -223,14 +234,10 @@ except Exception:
 
     cp "$REPAK_BIN" "$ROOT_DIR/local/repak"
     chmod +x "$ROOT_DIR/local/repak"
-    # Provide repak.exe alias so existing cross-platform code references continue to resolve
     ln -sf "$ROOT_DIR/local/repak" "$ROOT_DIR/local/repak.exe"
     rm -rf "$REPAK_TEMP" "$REPAK_ARCHIVE"
 fi
 
-# ------------------------------------------------------------------------------
-# 8. Repak wrapper scripts
-# ------------------------------------------------------------------------------
 echo "Creating repak wrappers in local/..."
 
 cat << 'EOF' > "$ROOT_DIR/local/unpak.sh"
@@ -277,9 +284,6 @@ EOF
 chmod +x "$ROOT_DIR/local/repack.sh"
 ln -sf "$ROOT_DIR/local/repack.sh" "$ROOT_DIR/local/repack.bat"
 
-# ------------------------------------------------------------------------------
-# 9. Configure AOYAssetProject with AssetGenerator plugins
-# ------------------------------------------------------------------------------
 if [ -f "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetGenerator/AssetGenerator.uplugin" ] && \
    [ -f "$ROOT_DIR/local/UEAssetToolkit-Fixes/AssetDumper/AssetDumper.uplugin" ]; then
     echo "Configuring AOY's Unreal project with the AssetGenerator plugins..."
@@ -312,9 +316,6 @@ else
     exit 1
 fi
 
-# ------------------------------------------------------------------------------
-# 10. Unreal Engine 4.27 check
-# ------------------------------------------------------------------------------
 UE_CMD="${AOY_UE_CMD:-}"
 if [ -z "$UE_CMD" ]; then
     for candidate in \
@@ -329,9 +330,6 @@ if [ -z "$UE_CMD" ]; then
     done
 fi
 
-# ------------------------------------------------------------------------------
-# 11. Final Setup Verification
-# ------------------------------------------------------------------------------
 echo
 echo "================= AOY Setup Check ================="
 CHECK_FAIL=0

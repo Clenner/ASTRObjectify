@@ -1,4 +1,3 @@
-"""AOY backend functions. Keep GUI code out of this module."""
 from __future__ import annotations
 
 import importlib.util
@@ -23,7 +22,6 @@ _clear_pycache()
 
 
 def find_game_pak() -> Path | None:
-    """Find the Astroneer main game .pak, including AOY_GAME_PAK override."""
     override = os.environ.get("AOY_GAME_PAK")
     if override and Path(override).expanduser().is_file():
         return Path(override).expanduser().resolve()
@@ -54,7 +52,6 @@ def find_game_pak() -> Path | None:
 
 
 def _find_repak(custom_path: str | Path | None = None) -> Path | None:
-    """Find the portable repak executable in local/ or on PATH."""
     if custom_path:
         custom = Path(custom_path).expanduser().resolve()
         if custom.is_file():
@@ -74,13 +71,11 @@ def _find_repak(custom_path: str | Path | None = None) -> Path | None:
 
 
 def get_extracted_game_path(root: str | Path | None = None) -> Path:
-    """Return the path to the extracted game directory in local/Astro-WindowsNoEditor."""
     base = Path(root).expanduser().resolve() if root else Path(__file__).resolve().parent
     return (base / "local" / "Astro-WindowsNoEditor").resolve()
 
 
 def _ensure_game_extracted() -> Path | None:
-    """Extract game files into local/Astro-WindowsNoEditor, auto-updating on game patches."""
     target_dir = get_extracted_game_path()
     game_pak = find_game_pak()
     stamp_file = target_dir / ".pak_stamp.json"
@@ -195,19 +190,12 @@ def _package_folder_name(priority: int, mod_id: str, version: str) -> str:
     return f"{priority:03d}-{mod_id}-{version}"
 
 
-#: Keys in metadata.json that are owned by the mod identity fields
-#: (priority/name/version) at the top of the Edit Metadata dialog.
-#: The metadata editor must not change these; they are forced from the
-#: package folder name / metafile on every save.
 METAFILE_CONTROLLED_KEYS = ("name", "mod_id", "version")
 
-#: Blank marker file inside each workspace. Users open a mod by selecting
-#: this file instead of picking a folder, which avoids folder-picker confusion.
 SELECT_MARKER = "SELECT.HERE"
 
 
 def _find_package_dir(workspace: Path) -> Path | None:
-    """Return the package folder inside a workspace, if one can be found."""
     for item in workspace.iterdir():
         if item.is_dir() and not item.is_symlink():
             match = re.fullmatch(r"([0-9]{1,3})-(.+)-([0-9]+\.[0-9]+\.[0-9]+)", item.name)
@@ -220,7 +208,6 @@ def _find_package_dir(workspace: Path) -> Path | None:
 
 
 def pak_filename(priority: int | str, mod_id: str, version: str) -> str:
-    """Build the required Astroneer distributable .pak filename."""
     priority_value = _validate_priority(priority)
     mod_id = _validate_mod_id(mod_id)
     version = _validate_mod_version(version)
@@ -238,10 +225,8 @@ def _write_json(path: Path, value: dict) -> None:
 
 
 def read_mod_metafile(workspace_path: str | Path, root: str | Path | None = None) -> dict:
-    """Read project metadata directly from the package folder name and metadata.json."""
     workspace = _resolve_workspace(workspace_path, root)
 
-    # Clean up obsolete aoy.json if present
     legacy_metafile = workspace / "aoy.json"
     if legacy_metafile.is_file():
         try:
@@ -287,7 +272,6 @@ def read_mod_metafile(workspace_path: str | Path, root: str | Path | None = None
 
 
 def create_mod_workspace(name: str, root: str | Path | None = None) -> Path:
-    """Create an AOY workspace and its initial package folder and metadata."""
     mod_id = _validate_mod_id(name)
     priority = 0
     version = "0.1.0"
@@ -312,7 +296,6 @@ def create_mod_workspace(name: str, root: str | Path | None = None) -> Path:
 
 
 def ensure_select_marker(workspace_path: str | Path, root: str | Path | None = None) -> Path:
-    """Create the blank SELECT.HERE marker inside a workspace if missing."""
     workspace = _resolve_workspace(workspace_path, root)
     marker = workspace / SELECT_MARKER
     try:
@@ -323,7 +306,6 @@ def ensure_select_marker(workspace_path: str | Path, root: str | Path | None = N
 
 
 def list_mod_workspaces(root: str | Path | None = None) -> list[str]:
-    """List existing mod folder names in AOY's Workspaces directory."""
     workspace = _workspace_path(root)
     if not workspace.is_dir():
         return []
@@ -334,7 +316,6 @@ def list_mod_workspaces(root: str | Path | None = None) -> list[str]:
 
 
 def get_mod_workspace(name: str, root: str | Path | None = None) -> Path:
-    """Resolve an existing mod workspace contained directly in Workspaces."""
     if not isinstance(name, str) or not name or name in (".", "..") or any(char in name for char in "/\\"):
         raise ValueError("Mod workspace name must be a single folder name.")
     workspace_root = _workspace_path(root).resolve()
@@ -349,7 +330,6 @@ def update_mod_metafile(workspace_path: str | Path,
                         mod_name: str,
                         version: str,
                         root: str | Path | None = None) -> Path:
-    """Update project fields, metadata.json, and the inner package-folder name."""
     workspace = _resolve_workspace(workspace_path, root)
     priority_value = _validate_priority(priority)
     mod_id = _validate_mod_id(mod_name)
@@ -398,7 +378,6 @@ def update_mod_metafile(workspace_path: str | Path,
     })
     _write_json(metadata_path, metadata)
 
-    # Remove obsolete aoy.json if present
     legacy_metafile = workspace / "aoy.json"
     if legacy_metafile.is_file():
         try:
@@ -413,12 +392,6 @@ def update_mod_metafile(workspace_path: str | Path,
 
 
 def read_mod_metadata(workspace_path: str | Path, root: str | Path | None = None) -> dict:
-    """Read metadata.json plus the metafile-controlled name/version.
-
-    Returns {"package_folder": str, "metadata": dict, "controlled": dict}.
-    The ``controlled`` mapping holds the name/mod_id/version owned by the
-    metafile; callers must display those read-only.
-    """
     workspace = _resolve_workspace(workspace_path, root)
     metafile = read_mod_metafile(workspace, root)
     package_name = metafile.get("package_folder")
@@ -450,13 +423,6 @@ def read_mod_metadata(workspace_path: str | Path, root: str | Path | None = None
 def update_mod_metadata(workspace_path: str | Path,
                         editable_fields: dict,
                         root: str | Path | None = None) -> Path:
-    """Write metadata.json, forcing metafile-controlled name/version.
-
-    ``editable_fields`` holds only the non-controlled keys the user edited.
-    Any name/mod_id/version entries in it are ignored; the metafile values win.
-    Other existing non-controlled keys not in ``editable_fields`` are removed,
-    so the metadata editor can delete fields.
-    """
     if not isinstance(editable_fields, dict):
         raise ValueError("Metadata fields must be a mapping.")
     workspace = _resolve_workspace(workspace_path, root)
@@ -483,7 +449,6 @@ def update_mod_metadata(workspace_path: str | Path,
     return package.resolve()
 
 
-#: Game targets managed by integrator auto-rebuild.
 MASTER_ITEM_LIST = "/Game/Items/ItemTypes/MasterItemList"
 PRINTER_T1_SMALL = "/Game/Components_Small/Printer_Breadboards_T1"
 PRINTER_T2_MEDIUM = "/Game/Components_Medium/Printer_Breadboards_T2"
@@ -491,7 +456,6 @@ _MANAGED_INTEGRATOR_TARGETS = (MASTER_ITEM_LIST, PRINTER_T1_SMALL, PRINTER_T2_ME
 
 
 def _asset_ref_from_file(package_dir: Path, file: Path) -> str | None:
-    """Convert a cooked .uasset path to a /Game/... asset reference."""
     if file.suffix.lower() != ".uasset":
         return None
     try:
@@ -505,7 +469,6 @@ def _asset_ref_from_file(package_dir: Path, file: Path) -> str | None:
 
 
 def scan_mod_assets(package_dir: str | Path) -> tuple[list[str], list[str]]:
-    """Scan cooked .uassets, returning (item_types, blueprints) asset refs."""
     package = Path(package_dir).expanduser().resolve()
     item_types: set[str] = set()
     blueprints: set[str] = set()
@@ -527,12 +490,6 @@ def scan_mod_assets(package_dir: str | Path) -> tuple[list[str], list[str]]:
 
 def build_integrator_entries(item_types: Sequence[str],
                              blueprints: Sequence[str]) -> dict:
-    """Build item_list_entries from scanned asset refs.
-
-    Heuristic matching real mods: every _IT goes to MasterItemList;
-    _BP assets with tier 3+ in the name (``_T3_`` and up) go to the
-    medium T2 printer, everything else goes to the small T1 printer.
-    """
     entries: dict = {}
     clean_it = sorted({ref for ref in item_types if isinstance(ref, str) and ref.startswith("/Game/")})
     if clean_it:
@@ -553,13 +510,6 @@ def build_integrator_entries(item_types: Sequence[str],
 
 def rebuild_integrator(workspace_path: str | Path,
                        root: str | Path | None = None) -> dict:
-    """Scan package .uassets and rewrite metadata.json integrator + sync.
-
-    Preserves every other metadata key and any unrelated integrator targets;
-    only the managed MasterItemList / printer entries are replaced (removed
-    when their asset list is now empty, so deleted assets drop out).
-    Returns the full integrator dict written.
-    """
     workspace = _resolve_workspace(workspace_path, root)
     metafile = read_mod_metafile(workspace, root)
     package_name = metafile.get("package_folder")
@@ -603,7 +553,6 @@ def rebuild_integrator(workspace_path: str | Path,
 
 
 def find_unreal_cmd() -> Path | None:
-    """Find the UE 4.27 command-line editor, including AOY_UE_CMD override."""
     override = os.environ.get("AOY_UE_CMD")
     candidates = [Path(override).expanduser()] if override else []
     for env_name in ("ProgramFiles", "ProgramFiles(x86)"):
@@ -643,7 +592,6 @@ def _resolve_project(project_file: str | Path) -> Path:
 
 
 def check_setup(root: str | Path | None = None) -> list[Check]:
-    """Return readiness checks for AOY's locally staged toolchain."""
     root_path = Path(root).expanduser().resolve() if root else Path(__file__).resolve().parent
     local = root_path / "local"
     python_version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
@@ -718,7 +666,6 @@ def check_setup(root: str | Path | None = None) -> list[Check]:
 
 
 def _run(command: Sequence[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    """Run a tool without opening a shell and return its captured output and exit code."""
     return subprocess.run(list(command), capture_output=True, text=True,
                           encoding="utf-8", errors="replace", timeout=timeout, check=False)
 
@@ -726,7 +673,6 @@ def _run(command: Sequence[str], timeout: int | None = None) -> subprocess.Compl
 def run_asset_generator(project_file: str | Path, dump_directory: str | Path,
                         ue_cmd: str | Path | None = None,
                         timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    """Run UEAssetToolkit's AssetGenerator commandlet without the editor window."""
     project = _resolve_project(project_file)
     editor = _resolve_editor(ue_cmd)
     output = Path(dump_directory).expanduser().resolve()
@@ -742,12 +688,6 @@ def cook_project(project_file: str | Path,
                  cook_all: bool = True,
                  iterative: bool = False,
                  timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    """Cook a valid Unreal project using UE4Editor-Cmd, without opening the GUI.
-
-    Unreal writes cooked files beneath the project's Saved/Sandboxes directory.
-    This cooks assets already in the project; it does not create AOY item assets
-    or guarantee that the result is a ready-to-install Astroneer mod.
-    """
     project = _resolve_project(project_file)
     editor = _resolve_editor(ue_cmd)
     if not target_platform or any(char.isspace() for char in target_platform):
@@ -766,7 +706,6 @@ def pack_pak(input_directory: str | Path, output_pak: str | Path,
              repak_path: str | Path | None = None,
              version: str = "V11",
              timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    """Pack a directory into a .pak archive with AOY's portable repak binary."""
     repak = _find_repak(repak_path)
     source = Path(input_directory).expanduser().resolve()
     destination = Path(output_pak).expanduser().resolve()
@@ -783,7 +722,6 @@ def pack_pak(input_directory: str | Path, output_pak: str | Path,
 def unpack_pak(input_pak: str | Path, output_directory: str | Path,
                repak_path: str | Path | None = None,
                timeout: int | None = None) -> subprocess.CompletedProcess[str]:
-    """Extract a .pak archive with AOY's portable repak binary."""
     repak = _find_repak(repak_path)
     archive = Path(input_pak).expanduser().resolve()
     output = Path(output_directory).expanduser().resolve()
@@ -795,8 +733,76 @@ def unpack_pak(input_pak: str | Path, output_directory: str | Path,
     return _run([str(repak.resolve()), "unpack", str(archive), "--output", str(output)], timeout)
 
 
+def import_mod_from_pak(pak_path: str | Path, root: str | Path | None = None,
+                        repak_path: str | Path | None = None,
+                        timeout: int | None = None) -> Path:
+    import tempfile
+    archive = Path(pak_path).expanduser().resolve()
+    if not archive.is_file() or archive.suffix.lower() != ".pak":
+        raise ValueError(f"Select a .pak file: {archive}")
+    match = re.fullmatch(r"([0-9]{1,3})-(.+)-([0-9]+\.[0-9]+\.[0-9]+)(?:_P)?", archive.stem)
+    if match:
+        priority_value = _validate_priority(match.group(1))
+        mod_id = _validate_mod_id(match.group(2))
+        version_value = _validate_mod_version(match.group(3))
+    else:
+        stem = archive.stem
+        for suffix in ("_P", "-P"):
+            if stem.endswith(suffix):
+                stem = stem[: -len(suffix)]
+                break
+        mod_id = _validate_mod_id(stem)
+        priority_value = 0
+        version_value = "0.1.0"
+    workspaces = _workspace_path(root)
+    workspaces.mkdir(parents=True, exist_ok=True)
+    workspace = workspaces / mod_id
+    if workspace.exists():
+        raise FileExistsError(f"A workspace named '{mod_id}' already exists.")
+    tmpdir = Path(tempfile.mkdtemp(prefix="aoy-import-"))
+    try:
+        result = unpack_pak(archive, tmpdir, repak_path, timeout)
+        if result.returncode != 0:
+            detail = format_process_result(result) or f"repak exited with code {result.returncode}"
+            raise RuntimeError(detail)
+        children = [item for item in tmpdir.iterdir()]
+        if not children:
+            raise ValueError(f"Nothing inside this .pak: {archive.name}")
+        workspace.mkdir(exist_ok=False)
+        package = workspace / _package_folder_name(priority_value, mod_id, version_value)
+        package.mkdir()
+        for item in children:
+            shutil.move(str(item), str(package / item.name))
+        metadata_path = package / "metadata.json"
+        metadata: dict = {}
+        if metadata_path.is_file():
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+            except (OSError, json.JSONDecodeError):
+                metadata = {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+        metadata.update({
+            "schema_version": 2,
+            "name": mod_id,
+            "mod_id": mod_id,
+            "version": version_value,
+        })
+        _write_json(metadata_path, metadata)
+        try:
+            (workspace / SELECT_MARKER).touch(exist_ok=True)
+        except OSError:
+            pass
+    except BaseException:
+        if workspace.exists():
+            shutil.rmtree(workspace, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    return workspace.resolve()
+
+
 def format_process_result(result: subprocess.CompletedProcess[str]) -> str:
-    """Combine captured tool output for display in the AOY interface/log panel."""
     return "\n".join(part.strip() for part in (result.stdout, result.stderr) if part and part.strip())
 
 

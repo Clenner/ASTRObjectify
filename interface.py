@@ -96,6 +96,10 @@ class AOYWindow(QMainWindow):
                 button.clicked.connect(self.create_new_mod)
             elif label == "Edit Existing Mod":
                 button.clicked.connect(self.edit_existing_mod)
+            elif label == "Import Mod":
+                button.clicked.connect(self.import_mod)
+            elif label == "About":
+                button.clicked.connect(self.show_about)
             elif label == "Exit":
                 button.clicked.connect(self.exit_app)
             layout.addWidget(button, alignment=Qt.AlignHCenter)
@@ -254,6 +258,47 @@ class AOYWindow(QMainWindow):
             QMessageBox.critical(self, "Could Not Open Mod", str(exc))
             return
         self.open_mod_workspace(mod_folder)
+
+    def import_mod(self):
+        pak_path, _ = QFileDialog.getOpenFileName(
+            self, "Select Mod .pak", "", "Pak files (*.pak)")
+        if not pak_path:
+            return
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            mod_folder = core.import_mod_from_pak(pak_path)
+        except FileExistsError as exc:
+            QMessageBox.critical(self, "Mod Already Exists", str(exc))
+            return
+        except (ValueError, OSError, RuntimeError) as exc:
+            QMessageBox.critical(self, "Import Failed", str(exc))
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.open_mod_workspace(mod_folder)
+
+    def show_about(self):
+        try:
+            text = (Path(__file__).resolve().parent / "README.md").read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "About", f"Could not read README.md: {exc}")
+            return
+        if "=====ABOUT=====" in text:
+            text = text.split("=====ABOUT=====", 1)[1].strip()
+        else:
+            text = text.strip() or "No about section yet."
+        dialog = QDialog(self)
+        dialog.setWindowTitle("About")
+        dialog.setMinimumWidth(420)
+        layout = QVBoxLayout(dialog)
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.PlainText)
+        layout.addWidget(label)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def edit_metadata(self):
         if self.active_mod is None:
