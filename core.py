@@ -468,24 +468,100 @@ def _asset_ref_from_file(package_dir: Path, file: Path) -> str | None:
     return "/" + ref
 
 
-def scan_mod_assets(package_dir: str | Path) -> tuple[list[str], list[str]]:
+def _iter_package_refs(package_dir: str | Path) -> list[str]:
     package = Path(package_dir).expanduser().resolve()
-    item_types: set[str] = set()
-    blueprints: set[str] = set()
     if not package.is_dir():
-        return [], []
+        return []
+    refs: set[str] = set()
     for file in sorted(package.rglob("*.uasset")):
         if file.is_symlink() or not file.is_file():
             continue
         ref = _asset_ref_from_file(package, file)
-        if ref is None:
-            continue
+        if ref is not None:
+            refs.add(ref)
+    return sorted(refs)
+
+
+def scan_mod_assets(package_dir: str | Path) -> tuple[list[str], list[str]]:
+    item_types: set[str] = set()
+    blueprints: set[str] = set()
+    for ref in _iter_package_refs(package_dir):
         leaf = ref.rsplit("/", 1)[-1]
         if leaf.endswith("_IT"):
             item_types.add(ref)
         elif leaf.endswith("_BP"):
             blueprints.add(ref)
     return sorted(item_types), sorted(blueprints)
+
+
+def asset_kind(ref: str) -> str:
+    leaf = ref.rsplit("/", 1)[-1]
+    if leaf.endswith("_IT"):
+        return "Item"
+    if leaf.endswith("_BP"):
+        return "Blueprint"
+    return "Asset"
+
+
+def asset_base(ref: str) -> str:
+    leaf = ref.rsplit("/", 1)[-1]
+    for suffix in ("_IT", "_BP"):
+        if leaf.endswith(suffix):
+            return leaf[: -len(suffix)]
+    return leaf
+
+
+def list_mod_parts(package_dir: str | Path) -> dict[str, list[tuple[str, str]]]:
+    parts: dict[str, list[tuple[str, str]]] = {}
+    for ref in _iter_package_refs(package_dir):
+        parts.setdefault(asset_base(ref), []).append((ref, asset_kind(ref)))
+    return {base: sorted(entries) for base, entries in sorted(parts.items())}
+
+
+def index_game_assets(root: str | Path | None = None) -> list[str]:
+    extracted = get_extracted_game_path(root)
+    if not extracted.is_dir():
+        return []
+    found: set[str] = set()
+    for file in sorted(extracted.rglob("*.uasset")):
+        if file.is_symlink() or not file.is_file():
+            continue
+        try:
+            found.add(file.resolve().relative_to(extracted).as_posix())
+        except (ValueError, OSError):
+            continue
+    return sorted(found)
+
+
+def override_asset_from_game(workspace_path: str | Path, game_rel: str | Path,
+                             root: str | Path | None = None) -> list[str]:
+    workspace = _resolve_workspace(workspace_path, root)
+    metafile = read_mod_metafile(workspace, root)
+    package_name = metafile.get("package_folder")
+    if not package_name:
+        raise FileNotFoundError(f"No package folder found in workspace: {workspace}")
+    package = workspace / package_name
+    if not package.is_dir():
+        raise FileNotFoundError(f"Package folder not found: {package}")
+    extracted = get_extracted_game_path(root)
+    src = (extracted / Path(game_rel)).resolve()
+    try:
+        src.relative_to(extracted)
+    except (ValueError, OSError) as exc:
+        raise ValueError(f"Game asset is outside the extracted game files: {game_rel}") from exc
+    if src.is_symlink() or not src.is_file() or src.suffix.lower() != ".uasset":
+        raise FileNotFoundError(f"Game asset not found: {game_rel}")
+    rel_parts = src.relative_to(extracted).parts
+    tail = rel_parts[1:] if rel_parts and rel_parts[0] == "Game" else rel_parts
+    dest_dir = package / "Game" / "Mods" / metafile.get("mod_name") / Path(*tail).parent
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    for sibling in src.parent.glob(src.stem + ".*"):
+        if sibling.is_symlink() or not sibling.is_file():
+            continue
+        shutil.copy2(sibling, dest_dir / sibling.name)
+    dest_uasset = dest_dir / (src.stem + ".uasset")
+    ref = _asset_ref_from_file(package, dest_uasset)
+    return [ref] if ref else []
 
 
 def build_integrator_entries(item_types: Sequence[str],
