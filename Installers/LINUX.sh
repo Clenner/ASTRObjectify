@@ -276,9 +276,9 @@ if [ -z "${1:-}" ]; then
     exit 2
 fi
 if [ -z "${2:-}" ]; then
-    "$REPAK" pack "$1" --version V11
+    "$REPAK" pack "$1" --version V4 --compression Zlib
 else
-    "$REPAK" pack "$1" "$2" --version V11
+    "$REPAK" pack "$1" "$2" --version V4 --compression Zlib
 fi
 EOF
 chmod +x "$ROOT_DIR/local/repack.sh"

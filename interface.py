@@ -14,6 +14,7 @@ try:
         QFormLayout,
         QGridLayout,
         QHBoxLayout,
+        QHeaderView,
         QInputDialog,
         QLabel,
         QLineEdit,
@@ -22,7 +23,9 @@ try:
         QPushButton,
         QScrollArea,
         QSpinBox,
-       QStackedWidget,
+        QStackedWidget,
+        QTableWidget,
+        QTableWidgetItem,
         QVBoxLayout,
         QWidget,
     )
@@ -87,6 +90,7 @@ class AOYWindow(QMainWindow):
             QPushButton { background-color: #101d38; color: #eef1f7; border: 1px solid #263b63; border-radius: 10px; padding: 12px 18px; font-size: 16px; }
             QPushButton:hover { background-color: #1b2e52; }
             QPushButton:pressed { background-color: #0b1427; }
+            QPushButton:checked { background-color: #1b2e52; border: 2px solid #4d6fb5; }
             QPushButton#recent { padding: 6px 12px; font-size: 13px; }
             QMenuBar { background-color: #222733; color: #eef1f7; }
             QMenuBar::item { background-color: #222733; padding: 4px 10px; border: 1px solid #303746; }
@@ -220,6 +224,7 @@ class AOYWindow(QMainWindow):
             return
 
         dialog = QDialog(self)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMinMaxButtonsHint)
         dialog.setWindowTitle("Edit Existing Mod")
         dialog.setMinimumWidth(420)
         layout = QVBoxLayout(dialog)
@@ -324,6 +329,7 @@ class AOYWindow(QMainWindow):
         else:
             text = text.strip() or "No about section yet."
         dialog = QDialog(self)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMinMaxButtonsHint)
         dialog.setWindowTitle("About")
         dialog.setMinimumSize(420, 300)
         layout = QVBoxLayout(dialog)
@@ -347,8 +353,13 @@ class AOYWindow(QMainWindow):
         except (ValueError, OSError) as exc:
             QMessageBox.critical(self, "Could Not Read Metadata", str(exc))
             return
+        try:
+            existing_author = core.read_mod_metadata(self.active_mod).get("metadata", {}).get("author", "")
+        except (ValueError, OSError):
+            existing_author = ""
 
         dialog = QDialog(self)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMinMaxButtonsHint)
         dialog.setWindowTitle("Edit Metadata")
         dialog.setMinimumWidth(380)
         layout = QVBoxLayout(dialog)
@@ -364,9 +375,12 @@ class AOYWindow(QMainWindow):
         name_edit = QLineEdit(str(metafile.get("mod_name", "")))
         version_edit = QLineEdit(str(metafile.get("version", "0.1.0")))
         version_edit.setPlaceholderText("1.0.0")
+        author_edit = QLineEdit(str(existing_author or ""))
+        author_edit.setPlaceholderText("Your name (shown in mod managers)")
         identity_form.addRow("Priority:", priority_spin)
         identity_form.addRow("Mod name / ID:", name_edit)
         identity_form.addRow("Version:", version_edit)
+        identity_form.addRow("Author:", author_edit)
         layout.addLayout(identity_form)
         hint = QLabel("Priority, Name and Version rename the package folder, update metadata.json, and control the export filename.")
         hint.setWordWrap(True)
@@ -385,6 +399,7 @@ class AOYWindow(QMainWindow):
                 priority_spin.value(),
                 name_edit.text(),
                 version_edit.text(),
+                author=author_edit.text(),
             )
         except FileExistsError as exc:
             QMessageBox.critical(self, "Name Already Exists", str(exc))
@@ -430,6 +445,7 @@ class AOYWindow(QMainWindow):
         if not entries:
             return
         dialog = QDialog(self)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMinMaxButtonsHint)
         dialog.setWindowTitle(base.replace("_", " "))
         dialog.setMinimumWidth(480)
         layout = QVBoxLayout(dialog)
@@ -443,6 +459,10 @@ class AOYWindow(QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dialog.reject)
         row.addWidget(reveal_btn)
+        if base == core.TRADE_VALUE_TABLE_LEAF and self._mod_trade_table() is not None:
+            edit_btn = QPushButton("Edit Trade Values")
+            edit_btn.clicked.connect(lambda: (dialog.accept(), self.edit_trade_values(self._mod_trade_table())))
+            row.addWidget(edit_btn)
         row.addStretch(1)
         row.addWidget(buttons)
         layout.addLayout(row)
@@ -460,32 +480,47 @@ class AOYWindow(QMainWindow):
         reveal_btn.clicked.connect(on_reveal)
         dialog.exec()
 
-    def edit_trade_platform(self) -> None:
+    def _mod_trade_table(self) -> Path | None:
         if self.active_mod is None:
-            return
-
-        def normalized(name: str) -> str:
-            return name.lower().replace("_", "")
-
+            return None
         try:
             metafile = core.read_mod_metafile(self.active_mod)
             package_name = metafile.get("package_folder") or ""
-        except (ValueError, OSError) as exc:
-            QMessageBox.critical(self, "Could Not Open Mod", str(exc))
-            return
-        package = self.active_mod / package_name if package_name else None
-        existing: list[str] = []
-        if package is not None and package.is_dir():
+        except (ValueError, OSError):
+            return None
+        if not package_name:
+            return None
+        package = self.active_mod / package_name
+        table = package / "Astro" / "Content" / "Globals" / (
+            core.TRADE_VALUE_TABLE_LEAF + ".uasset")
+        if table.is_file():
+            return table
+        legacy = package / "Game" / "Globals" / (
+            core.TRADE_VALUE_TABLE_LEAF + ".uasset")
+        if legacy.is_file():
             try:
-                groups = core.list_mod_parts(package)
+                table.parent.mkdir(parents=True, exist_ok=True)
+                for sibling in legacy.parent.glob(legacy.stem + ".*"):
+                    if sibling.is_file() and not sibling.is_symlink():
+                        sibling.rename(table.parent / sibling.name)
+                try:
+                    legacy.parent.rmdir()
+                    legacy.parent.parent.rmdir()
+                except OSError:
+                    pass
             except OSError:
-                groups = {}
-            existing = sorted(base for base in groups if "tradeplatform" in normalized(base))
-        if existing:
-            self._refresh_workspace()
-            self.show_part_detail(existing[0])
-            return
+                return legacy
+            return table if table.is_file() else None
+        return None
 
+    def edit_trade_platform(self) -> None:
+        if self.active_mod is None:
+            return
+        table = self._mod_trade_table()
+        if table is not None:
+            self._refresh_workspace()
+            self.edit_trade_values(table)
+            return
         try:
             extracted = core.get_extracted_game_path()
         except OSError:
@@ -496,35 +531,268 @@ class AOYWindow(QMainWindow):
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            index = core.index_game_assets()
+            game_rel = core.find_trade_value_table()
         except OSError as exc:
             QMessageBox.critical(self, "Could Not Index Game Files", str(exc))
             return
         finally:
             QApplication.restoreOverrideCursor()
-        matches = [rel for rel in index if "tradeplatform" in normalized(rel)]
-        recipes = [rel for rel in matches if "recipe" in normalized(rel)]
-        targets = recipes or matches
-        if not targets:
+        if game_rel is None:
             QMessageBox.warning(self, "Trade Platform Not Found",
-                                "No Trade Platform assets were found in the extracted game files.")
+                                "No Trade Platform recipe table was found in the extracted game files.")
             return
-        QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            for rel in targets:
-                core.override_asset_from_game(self.active_mod, rel)
-        except (ValueError, OSError) as exc:
-            QMessageBox.critical(self, "Could Not Add Trade Platform", str(exc))
+            game_table = (extracted / Path(game_rel)).resolve()
+        except OSError as exc:
+            QMessageBox.critical(self, "Could Not Open Recipe Table", str(exc))
             return
-        finally:
-            QApplication.restoreOverrideCursor()
-        self._refresh_workspace()
-        refreshed = [base for base in self._part_groups if "tradeplatform" in normalized(base)]
-        if refreshed:
-            self.show_part_detail(sorted(refreshed)[0])
-        else:
-            QMessageBox.information(self, "Trade Platform",
-                                    f"Added {len(targets)} Trade Platform asset(s).")
+        self.edit_trade_values(game_table, stage_into_mod=self.active_mod)
+
+    def edit_trade_values(self, table_path: str | Path,
+                          stage_into_mod: str | Path | None = None) -> None:
+        table = Path(table_path)
+        dialog = QDialog(self)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowMinMaxButtonsHint)
+        dialog.setWindowTitle("Trade Platform Recipe")
+        dialog.setMinimumSize(560, 480)
+        layout = QVBoxLayout(dialog)
+        body = QHBoxLayout()
+        layout.addLayout(body, 1)
+        tab_buttons = QVBoxLayout()
+        body.addLayout(tab_buttons)
+        pages = QStackedWidget()
+        body.addWidget(pages, 1)
+        try:
+            sections = core.read_trade_sections(table)
+        except (ValueError, OSError) as exc:
+            QMessageBox.critical(self, "Could Not Read Trade Values", str(exc))
+            return
+        if not sections:
+            QMessageBox.critical(self, "Could Not Read Trade Values",
+                                  "No trade sections found in this file.")
+            return
+
+        def decompose(value: float) -> tuple[int, int]:
+            best = (0, 1)
+            best_err = abs(value)
+            for ratio_in in range(0, 10):
+                for ratio_out in range(1, 10):
+                    err = abs(ratio_in / ratio_out - value)
+                    if err < best_err - 1e-9 or (
+                            abs(err - best_err) <= 1e-9 and ratio_in + ratio_out < best[0] + best[1]):
+                        best = (ratio_in, ratio_out)
+                        best_err = err
+            return best
+
+        def frac_text(ratio_in: int, ratio_out: int) -> str:
+            return f"{ratio_in / ratio_out:.4f}".rstrip("0").rstrip(".")
+
+        tab_state: list[dict] = []
+
+        def build_tab(rows: list, pos: int) -> QWidget:
+            page = QWidget()
+            page_layout = QVBoxLayout(page)
+            page_layout.addWidget(QLabel(f"{len(rows)} trade values:"))
+            grid = QTableWidget(len(rows), 4)
+            grid.setHorizontalHeaderLabels(["Item", "Input", "Gets", "Value"])
+            grid.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+            for column, width in ((1, 90), (2, 90), (3, 110)):
+                grid.horizontalHeader().setSectionResizeMode(column, QHeaderView.Fixed)
+                grid.setColumnWidth(column, width)
+            grid.verticalHeader().setVisible(False)
+            grid.setEditTriggers(QTableWidget.NoEditTriggers)
+            state: dict = {"rows": rows, "s_spins": [], "t_spins": [],
+                           "val_labels": [], "original": [], "dirty": []}
+
+            def mark_dirty(index: int, st: dict = state) -> None:
+                st["dirty"][index] = (st["s_spins"][index].value(),
+                                      st["t_spins"][index].value()) != st["original"][index]
+                st["val_labels"][index].setText(
+                    frac_text(st["s_spins"][index].value(), st["t_spins"][index].value()))
+
+            for index, row in enumerate(rows):
+                name_cell = QTableWidgetItem(row["display"])
+                name_cell.setFlags(name_cell.flags() & ~Qt.ItemIsEditable)
+                name_cell.setToolTip(row.get("leaf") or row["display"])
+                grid.setItem(index, 0, name_cell)
+                in_spin = QSpinBox()
+                in_spin.setRange(0, 9)
+                out_spin = QSpinBox()
+                out_spin.setRange(1, 9)
+                in_spin.blockSignals(True)
+                out_spin.blockSignals(True)
+                start_in, start_out = decompose(float(row["value"]))
+                in_spin.setValue(start_in)
+                out_spin.setValue(start_out)
+                in_spin.blockSignals(False)
+                out_spin.blockSignals(False)
+                grid.setCellWidget(index, 1, in_spin)
+                grid.setCellWidget(index, 2, out_spin)
+                state["s_spins"].append(in_spin)
+                state["t_spins"].append(out_spin)
+                val_label = QLabel(frac_text(start_in, start_out))
+                val_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                grid.setCellWidget(index, 3, val_label)
+                state["val_labels"].append(val_label)
+                state["original"].append((start_in, start_out))
+                state["dirty"].append(False)
+                in_spin.valueChanged.connect(
+                    lambda _v, i=index: mark_dirty(i))
+                out_spin.valueChanged.connect(
+                    lambda _v, i=index: mark_dirty(i))
+            page_layout.addWidget(grid, 1)
+            tab_row = QHBoxLayout()
+            add_btn = QPushButton("＋ Add Trade")
+            add_btn.setMinimumSize(120, 36)
+            add_btn.clicked.connect(lambda _checked=False, p=pos: add_trade(p))
+            tab_row.addWidget(add_btn, alignment=Qt.AlignLeft)
+            tab_row.addStretch(1)
+            page_layout.addLayout(tab_row)
+            tab_state.append(state)
+            return page
+
+        live_sections: list = list(sections)
+        live_labels: list[str] = [s["label"] for s in live_sections]
+        selector_buttons: dict[str, QPushButton] = {}
+
+        def clear_tabs() -> None:
+            while pages.count():
+                page = pages.widget(0)
+                pages.removeWidget(page)
+                page.deleteLater()
+            selector_buttons.clear()
+            tab_state.clear()
+
+        def build_button_column() -> None:
+            while tab_buttons.count():
+                item = tab_buttons.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.deleteLater()
+            for label in live_labels:
+                btn = QPushButton(label)
+                btn.setCheckable(True)
+                btn.setMinimumSize(110, 44)
+                tab_buttons.addWidget(btn)
+                selector_buttons[label] = btn
+                btn.clicked.connect(lambda _checked=False, name=label: select_tab(name))
+            tab_buttons.addStretch(1)
+
+        def refresh_tabs(select: str | None = None) -> None:
+            nonlocal live_sections, live_labels
+            try:
+                live_sections = core.read_trade_sections(table)
+            except (ValueError, OSError) as exc:
+                QMessageBox.critical(dialog, "Could Not Read Trade Values", str(exc))
+                return
+            live_labels = [s["label"] for s in live_sections]
+            clear_tabs()
+            for pos, (label, section) in enumerate(zip(live_labels, live_sections)):
+                pages.addWidget(build_tab(section["rows"], pos))
+            build_button_column()
+            select_tab(select or live_labels[-1])
+
+        def select_tab(label: str) -> None:
+            for name, btn in selector_buttons.items():
+                btn.setChecked(name == label)
+            if label in live_labels:
+                pages.setCurrentIndex(live_labels.index(label))
+
+        def add_trade(pos: int) -> None:
+            try:
+                current = core.read_trade_sections(table)
+            except (ValueError, OSError) as exc:
+                QMessageBox.critical(dialog, "Could Not Read Trade Values", str(exc))
+                return
+            if not 0 <= pos < len(current):
+                return
+            owned = {row["ref"] for row in current[pos]["rows"]}
+            candidates = []
+            for sec in current:
+                for row in sec["rows"]:
+                    if row["ref"] not in owned and row["ref"] not in [c[0] for c in candidates]:
+                        candidates.append((row["ref"], row["display"]))
+            if not candidates:
+                QMessageBox.information(dialog, "Add Trade", "Every known item is already in this section.")
+                return
+            form = QDialog(dialog)
+            form.setWindowTitle(f"Add Trade — {live_labels[pos]}")
+            form.setMinimumWidth(340)
+            form_layout = QFormLayout(form)
+            picker = QComboBox()
+            for ref, display in sorted(candidates, key=lambda c: c[1].casefold()):
+                picker.addItem(display, ref)
+            form_layout.addRow("Item:", picker)
+            form_in = QSpinBox()
+            form_in.setRange(0, 9)
+            form_in.setValue(1)
+            form_layout.addRow("Input:", form_in)
+            form_out = QSpinBox()
+            form_out.setRange(1, 9)
+            form_out.setValue(1)
+            form_layout.addRow("Gets:", form_out)
+            form_buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            form_layout.addRow(form_buttons)
+            form_buttons.accepted.connect(form.accept)
+            form_buttons.rejected.connect(form.reject)
+            if form.exec() != QDialog.Accepted:
+                return
+            try:
+                core.add_trade_row(table, pos,
+                                   picker.currentData(),
+                                   form_in.value() / form_out.value())
+            except (ValueError, OSError) as exc:
+                QMessageBox.critical(dialog, "Could Not Add Trade", str(exc))
+                return
+            refresh_tabs(live_labels[pos])
+
+        for pos, (label, section) in enumerate(zip(live_labels, live_sections)):
+            pages.addWidget(build_tab(section["rows"], pos))
+        build_button_column()
+        select_tab("Fault Finder" if "Fault Finder" in live_labels else live_labels[-1])
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons)
+
+        def on_save() -> None:
+            changes = {}
+            for state in tab_state:
+                for index, row in enumerate(state["rows"]):
+                    if not state["dirty"][index]:
+                        continue
+                    ratio_in = state["s_spins"][index].value()
+                    ratio_out = state["t_spins"][index].value()
+                    if ratio_out <= 0:
+                        continue
+                    changes[row["offset"]] = ratio_in / ratio_out
+            if not changes:
+                dialog.accept()
+                return
+            target = table
+            if stage_into_mod is not None:
+                try:
+                    game_rel = core.find_trade_value_table()
+                    if game_rel is None:
+                        raise ValueError("Recipe table not found in the extracted game files.")
+                    core.override_asset_from_game(stage_into_mod, game_rel, mirror=True)
+                    staged = self._mod_trade_table()
+                    if staged is None:
+                        raise ValueError("Could not stage the recipe table into this mod.")
+                    target = staged
+                except (ValueError, OSError) as exc:
+                    QMessageBox.critical(dialog, "Could Not Stage Recipe Table", str(exc))
+                    return
+            try:
+                core.write_trade_values(target, changes)
+            except (ValueError, OSError) as exc:
+                QMessageBox.critical(dialog, "Could Not Save Trade Values", str(exc))
+                return
+            self._refresh_workspace()
+            QMessageBox.information(dialog, "Trade Values", f"Saved {len(changes)} trade value(s).")
+            dialog.accept()
+
+        buttons.accepted.connect(on_save)
+        buttons.rejected.connect(dialog.reject)
+        dialog.exec()
 
     def export_mod(self):
         if self.active_mod is None:

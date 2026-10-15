@@ -51,6 +51,47 @@ def find_game_pak() -> Path | None:
     return None
 
 
+def get_game_version() -> str | None:
+    override = os.environ.get("AOY_GAME_VERSION")
+    if override and re.fullmatch(r"[0-9]+\.[0-9]+(\.[0-9]+){0,2}", override.strip()):
+        return override.strip()
+    for game_root in _game_roots():
+        version_file = game_root / "build.version"
+        if not version_file.is_file() or version_file.is_symlink():
+            continue
+        try:
+            with version_file.open(encoding="utf-8", errors="replace") as handle:
+                line = handle.readline()
+        except OSError:
+            continue
+        if not line:
+            continue
+        for candidate in (line[:-10] if len(line) > 10 else "", line.strip()):
+            candidate = candidate.strip()
+            if re.fullmatch(r"[0-9]+\.[0-9]+(\.[0-9]+){0,2}", candidate):
+                return candidate
+    return None
+
+
+def _game_roots() -> list[Path]:
+    roots: list[Path] = []
+    game_pak = find_game_pak()
+    if game_pak is not None:
+        roots.append(game_pak.parent.parent.parent.parent)
+    steam_env = os.environ.get("ASTRONEER_PATH")
+    if steam_env:
+        roots.append(Path(steam_env).expanduser())
+    for env_name in ("ProgramFiles(x86)", "ProgramFiles"):
+        base = os.environ.get(env_name)
+        if base:
+            roots.append(Path(base) / "Steam/steamapps/common/ASTRONEER")
+    for drive in ("C:/", "D:/", "E:/", "F:/"):
+        roots.append(Path(drive) / "SteamLibrary/steamapps/common/ASTRONEER")
+        roots.append(Path(drive) / "Steam/steamapps/common/ASTRONEER")
+        roots.append(Path(drive) / "Program Files (x86)/Steam/steamapps/common/ASTRONEER")
+    return roots
+
+
 def _find_repak(custom_path: str | Path | None = None) -> Path | None:
     if custom_path:
         custom = Path(custom_path).expanduser().resolve()
@@ -271,7 +312,8 @@ def read_mod_metafile(workspace_path: str | Path, root: str | Path | None = None
     }
 
 
-def create_mod_workspace(name: str, root: str | Path | None = None) -> Path:
+def create_mod_workspace(name: str, root: str | Path | None = None,
+                         author: str = "") -> Path:
     mod_id = _validate_mod_id(name)
     priority = 0
     version = "0.1.0"
@@ -282,12 +324,14 @@ def create_mod_workspace(name: str, root: str | Path | None = None) -> Path:
     package_name = _package_folder_name(priority, mod_id, version)
     package = workspace / package_name
     package.mkdir()
-    _write_json(package / "metadata.json", {
+    initial_metadata = {
         "schema_version": 2,
         "name": mod_id,
         "mod_id": mod_id,
+        "author": author.strip() if isinstance(author, str) else "",
         "version": version,
-    })
+    }
+    _write_json(package / "metadata.json", initial_metadata)
     try:
         (workspace / SELECT_MARKER).touch(exist_ok=True)
     except OSError:
@@ -329,7 +373,8 @@ def update_mod_metafile(workspace_path: str | Path,
                         priority: int | str,
                         mod_name: str,
                         version: str,
-                        root: str | Path | None = None) -> Path:
+                        root: str | Path | None = None,
+                        author: str | None = None) -> Path:
     workspace = _resolve_workspace(workspace_path, root)
     priority_value = _validate_priority(priority)
     mod_id = _validate_mod_id(mod_name)
@@ -376,6 +421,8 @@ def update_mod_metafile(workspace_path: str | Path,
         "mod_id": mod_id,
         "version": version_value,
     })
+    if author is not None:
+        metadata["author"] = author.strip() if isinstance(author, str) else ""
     _write_json(metadata_path, metadata)
 
     legacy_metafile = workspace / "aoy.json"
@@ -445,6 +492,7 @@ def update_mod_metadata(workspace_path: str | Path,
         "mod_id": metafile.get("mod_name"),
         "version": metafile.get("version"),
     })
+    new_metadata.pop("astro_build", None)
     _write_json(package / "metadata.json", new_metadata)
     return package.resolve()
 
@@ -463,9 +511,11 @@ def _asset_ref_from_file(package_dir: Path, file: Path) -> str | None:
     except (ValueError, OSError):
         return None
     ref = rel.with_suffix("").as_posix()
-    if not re.fullmatch(r"Game/Mods/[A-Za-z0-9.]+/.+", ref):
-        return None
-    return "/" + ref
+    if re.fullmatch(r"Game/Mods/[A-Za-z0-9.]+/.+", ref):
+        return "/" + ref
+    if re.fullmatch(r"Astro/Content/.+", ref):
+        return "/Game/" + ref[len("Astro/Content/"):]
+    return None
 
 
 def _iter_package_refs(package_dir: str | Path) -> list[str]:
@@ -486,6 +536,8 @@ def scan_mod_assets(package_dir: str | Path) -> tuple[list[str], list[str]]:
     item_types: set[str] = set()
     blueprints: set[str] = set()
     for ref in _iter_package_refs(package_dir):
+        if not re.fullmatch(r"/Game/Mods/[A-Za-z0-9.]+/.+", ref):
+            continue
         leaf = ref.rsplit("/", 1)[-1]
         if leaf.endswith("_IT"):
             item_types.add(ref)
@@ -534,7 +586,8 @@ def index_game_assets(root: str | Path | None = None) -> list[str]:
 
 
 def override_asset_from_game(workspace_path: str | Path, game_rel: str | Path,
-                             root: str | Path | None = None) -> list[str]:
+                             root: str | Path | None = None,
+                             mirror: bool = False) -> list[str]:
     workspace = _resolve_workspace(workspace_path, root)
     metafile = read_mod_metafile(workspace, root)
     package_name = metafile.get("package_folder")
@@ -552,8 +605,16 @@ def override_asset_from_game(workspace_path: str | Path, game_rel: str | Path,
     if src.is_symlink() or not src.is_file() or src.suffix.lower() != ".uasset":
         raise FileNotFoundError(f"Game asset not found: {game_rel}")
     rel_parts = src.relative_to(extracted).parts
-    tail = rel_parts[1:] if rel_parts and rel_parts[0] == "Game" else rel_parts
-    dest_dir = package / "Game" / "Mods" / metafile.get("mod_name") / Path(*tail).parent
+    if mirror and len(rel_parts) >= 3 and rel_parts[0] == "Astro" and rel_parts[1] == "Content":
+        dest_dir = package / Path(*rel_parts[:-1])
+    elif mirror and rel_parts and rel_parts[0] == "Game":
+        dest_dir = package / "Astro" / "Content" / Path(*rel_parts[1:-1])
+    elif mirror:
+        dest_dir = package / "Astro" / "Content" / Path(*rel_parts[:-1])
+    elif rel_parts and rel_parts[0] == "Game":
+        dest_dir = package / "Game" / "Mods" / metafile.get("mod_name") / Path(*rel_parts[1:-1])
+    else:
+        dest_dir = package / "Game" / "Mods" / metafile.get("mod_name") / Path(*rel_parts[:-1])
     dest_dir.mkdir(parents=True, exist_ok=True)
     for sibling in src.parent.glob(src.stem + ".*"):
         if sibling.is_symlink() or not sibling.is_file():
@@ -607,6 +668,7 @@ def rebuild_integrator(workspace_path: str | Path,
         if not isinstance(metadata, dict):
             raise ValueError(f"Mod metadata must contain a JSON object: {metadata_path}")
     metadata.setdefault("sync", "serverclient")
+    metadata.pop("astro_build", None)
     integrator = metadata.get("integrator")
     if not isinstance(integrator, dict):
         integrator = {}
@@ -626,6 +688,452 @@ def rebuild_integrator(workspace_path: str | Path,
     })
     _write_json(metadata_path, metadata)
     return integrator
+
+
+TRADE_VALUE_TABLE_LEAF = "ItemTradeValueTable"
+
+
+def _read_uasset_tables(uasset_path: str | Path) -> tuple[list[str], list[tuple[int, int, int]]]:
+    import struct
+    raw = Path(uasset_path).expanduser().resolve().read_bytes()
+    if len(raw) < 72 or struct.unpack_from("<I", raw, 0)[0] != 0x9E2A83C1:
+        raise ValueError(f"Not a UE package file: {uasset_path}")
+
+    def ri(off: int) -> int:
+        return struct.unpack_from("<i", raw, off)[0]
+
+    name_count, name_off = ri(41), ri(45)
+    imp_count, imp_off = ri(65), ri(69)
+    if not (0 < name_count < 100000 and 0 < name_off < len(raw)):
+        raise ValueError(f"Could not read name table: {uasset_path}")
+    names: list[str] = []
+    o = name_off
+    for _ in range(name_count):
+        n = struct.unpack_from("<i", raw, o)[0]
+        o += 4
+        if n == 0:
+            names.append("")
+            continue
+        if n < 0 or o + abs(n) > len(raw):
+            raise ValueError(f"Corrupt name table: {uasset_path}")
+        names.append(raw[o:o + abs(n)].decode("ascii", "replace").rstrip("\x00"))
+        o += abs(n) + 4
+    imports: list[tuple[int, int, int]] = []
+    o = imp_off
+    for _ in range(imp_count):
+        if o + 28 > len(raw):
+            raise ValueError(f"Corrupt import table: {uasset_path}")
+        cname = struct.unpack_from("<i", raw, o + 8)[0]
+        oname = struct.unpack_from("<i", raw, o + 20)[0]
+        outer = struct.unpack_from("<i", raw, o + 16)[0]
+        imports.append((cname, oname, outer))
+        o += 28
+    return names, imports
+
+
+def _import_game_path(names: list[str], imports: list[tuple[int, int, int]], ref: int) -> str | None:
+    seen: set[int] = set()
+    while ref < 0 and -ref - 1 < len(imports) and ref not in seen:
+        seen.add(ref)
+        _, oname, outer = imports[-ref - 1]
+        name = names[oname] if 0 <= oname < len(names) else ""
+        if name.startswith("/Game/"):
+            return name
+        if outer == 0:
+            return name or None
+        ref = outer
+    return None
+
+
+def _import_display_name(names: list[str], imports: list[tuple[int, int, int]], ref: int) -> str:
+    path = _import_game_path(names, imports, ref)
+    if path:
+        return pretty_item_name(path.rsplit("/", 1)[-1])
+    if ref < 0 and -ref - 1 < len(imports):
+        _, oname, _ = imports[-ref - 1]
+        if 0 <= oname < len(names) and names[oname]:
+            return pretty_item_name(names[oname])
+    return f"ref {ref}"
+
+
+def pretty_item_name(leaf: str) -> str:
+    text = leaf.strip()
+    if text in ITEM_NAME_OVERRIDES:
+        return ITEM_NAME_OVERRIDES[text]
+    text = re.sub(r"^(ItemType)[_ ]?", "", text)
+    text = re.sub(r"[_\s]+IT$", "", text)
+    text = text.replace("_", " ")
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return ITEM_NAME_OVERRIDES.get(text, text) or leaf
+
+
+ITEM_NAME_OVERRIDES = {
+    "Nano Carbon Alloy": "Nanocarbon Alloy",
+    "NanoCarbonAlloy": "Nanocarbon Alloy",
+    "RTG_T1_IT": "RTG",
+    "Object_Ball_Beach_LargeB_IT": "Beach Ball",
+    "ItemType_Seed_SuperRose": "Hybrid Rose Seed",
+    "ItemType_Firework_Rocket_Base_Red": "Red Firework",
+    "ItemType_Firework_Rocket_Base_Orange": "Orange Firework",
+    "ItemType_Firework_Rocket_Base_Yellow": "Yellow Firework",
+    "ItemType_Firework_Rocket_Base_Green": "Green Firework",
+    "ItemType_Firework_Rocket_Base_Blue": "Blue Firework",
+    "ItemType_Firework_Rocket_Base_Teal": "Teal Firework",
+    "ItemType_Firework_Rocket_Base_Violet": "Violet Firework",
+    "Repackager_T1": "Packager",
+    "ConsumableJumpjet_IT": "Solid-Fuel Jumpjet",
+    "Fuel": "Hydrazine",
+    "SmelterSmall": "Portable Smelting Furnace",
+    "GravitySphere_Large_IT": "Gravity Globe",
+}
+
+
+def read_trade_values(uasset_path: str | Path) -> list[dict]:
+    sections = read_trade_sections(uasset_path)
+    if not sections:
+        raise ValueError(f"No trade value map found in: {Path(uasset_path).name}")
+    return sections[-1]["rows"]
+
+
+def read_trade_sections(uasset_path: str | Path) -> list[dict]:
+    import struct
+    asset = Path(uasset_path).expanduser().resolve()
+    uexp_path = asset.with_suffix(".uexp")
+    if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
+        raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
+    names, imports = _read_uasset_tables(asset)
+    ux = uexp_path.read_bytes()
+    n = len(ux) // 4
+    ints = struct.unpack("<%di" % n, ux[:n * 4])
+    flts = struct.unpack("<%df" % n, ux[:n * 4])
+
+    def sane(v: float) -> bool:
+        return v == v and 0 <= v < 1000000 and (v == 0 or v >= 1e-6)
+
+    sections: list[dict] = []
+    cursor = 0
+    while cursor <= len(ux) - 8:
+        count = struct.unpack_from("<i", ux, cursor)[0]
+        if 0 <= count <= 500 and cursor + 4 + count * 8 <= len(ux):
+            rows = []
+            ok = True
+            for j in range(count):
+                key = struct.unpack_from("<i", ux, cursor + 4 + j * 8)[0]
+                val = struct.unpack_from("<f", ux, cursor + 8 + j * 8)[0]
+                if not -len(imports) <= key <= 1 or not sane(val):
+                    ok = False
+                    break
+                rows.append((key, val, cursor + 8 + j * 8))
+            if not ok:
+                cursor += 1
+                continue
+            pairs_start = cursor + 4
+            size_off = pairs_start - 33
+            value_off = pairs_start - 8
+            key_off = pairs_start - 53
+            top_off = pairs_start - 57
+            if size_off < 0 or key_off < 0:
+                cursor += 1
+                continue
+            if struct.unpack_from("<i", ux, size_off)[0] != 8 + count * 8:
+                cursor += 1
+                continue
+            key_ref = struct.unpack_from("<i", ux, key_off)[0]
+            if not -len(imports) <= key_ref <= 1:
+                cursor += 1
+                continue
+            decoded = []
+            for key, val, offset in rows:
+                leaf = None
+                path = _import_game_path(names, imports, key)
+                if path and path.startswith("/Game/"):
+                    leaf = path.rsplit("/", 1)[-1]
+                elif -len(imports) <= key <= 1 and key < 0:
+                    _, oname, _ = imports[-key - 1]
+                    if 0 <= oname < len(names) and names[oname]:
+                        leaf = names[oname]
+                decoded.append({
+                    "display": _import_display_name(names, imports, key),
+                    "leaf": leaf,
+                    "ref": key,
+                    "value": val,
+                    "offset": offset,
+                })
+            sections.append({"offset": cursor, "count": count, "rows": decoded,
+                             "key_ref": key_ref, "key_offset": key_off,
+                             "value_offset": value_off, "size_offset": size_off,
+                             "top_offset": top_off, "pairs_end": pairs_start + count * 8,
+                             "label": trade_section_label(names, imports, key_ref)})
+            cursor += 4 + count * 8
+            continue
+        cursor += 1
+    if not sections:
+        raise ValueError(f"No trade value map found in: {asset.name}")
+    return sections
+
+
+def describe_ref(uasset_path: str | Path, ref: int) -> str:
+    asset = Path(uasset_path).expanduser().resolve()
+    names, imports = _read_uasset_tables(asset)
+    if -len(imports) <= ref <= 1 and ref < 0:
+        _, oname, _ = imports[-ref - 1]
+        if 0 <= oname < len(names) and names[oname]:
+            text = names[oname]
+            if text.endswith("_C"):
+                text = text[:-2]
+            return pretty_item_name(text)
+    return f"ref {ref}"
+
+
+def trade_section_label(names: list[str], imports: list[tuple[int, int, int]], key_ref: int) -> str:
+    if -len(imports) <= key_ref <= 1 and key_ref < 0:
+        _, oname, _ = imports[-key_ref - 1]
+        if 0 <= oname < len(names) and names[oname]:
+            text = names[oname]
+            if text.endswith("_C"):
+                text = text[:-2]
+            for keyword, label in (("Scrap", "Scrap"), ("Astronium", "Astronium"),
+                                   ("FaultFinder", "Fault Finder")):
+                if keyword.lower() in text.lower():
+                    return label
+            return pretty_item_name(text)
+    return "Section"
+
+
+def _bump_trade_outer_size(raw: bytearray, delta: int) -> None:
+    """Update the top-level trade-map size at .uexp offset 16.
+
+    Verified against working OrbitalMadness pak: game base 535,
+    +1 row = 543. Manual edits must keep this in sync or the game
+    silently falls back to vanilla values.
+    """
+    import struct
+    if len(raw) < 20:
+        raise ValueError("Trade .uexp too small, refusing to modify.")
+    size = struct.unpack_from("<i", raw, 16)[0]
+    if not 0 < size < 100000:
+        raise ValueError("Unexpected outer trade size, refusing to modify.")
+    struct.pack_into("<i", raw, 16, size + delta)
+
+
+def _bump_trade_uasset(asset_path: str | Path, delta: int) -> None:
+    """Update ItemTradeValueTable .uasset size fields after .uexp size change.
+
+    Byte-verified against working OrbitalMadness pak (game base vs +1 row):
+    two little-endian i32 fields, at offsets 169 and 11770, each +8 per
+    added row (588 -> 596 is the exact value in the crash log when stale).
+    Only valid for edits that reuse existing imports/names (no table growth),
+    which is all AOY trade-row edits.
+    """
+    import struct
+    asset = Path(asset_path).expanduser().resolve()
+    raw = bytearray(asset.read_bytes())
+    if len(raw) < 11774:
+        raise ValueError("Unexpected trade .uasset size, refusing to modify.")
+    for off in (169, 11770):
+        size = struct.unpack_from("<i", raw, off)[0]
+        if not 0 < size < 100000:
+            raise ValueError("Unexpected trade .uasset field, refusing to modify.")
+        struct.pack_into("<i", raw, off, size + delta)
+    asset.write_bytes(bytes(raw))
+
+
+def _resolve_item_ref(names: list[str], imports: list[tuple[int, int, int]], item: str | int) -> int:
+    if isinstance(item, bool):
+        raise ValueError(f"Unknown item: {item!r}")
+    if isinstance(item, int):
+        if -len(imports) <= item <= 1 and item != 0:
+            return item
+        raise ValueError(f"Unknown item reference: {item!r}")
+    for index, (_, oname, _) in enumerate(imports):
+        if 0 <= oname < len(names) and names[oname] == item:
+            return -index - 1
+    raise ValueError(f"Item is not referenced by this file: {item!r}")
+
+
+def add_trade_row(uasset_path: str | Path, section_index: int,
+                  item: str | int, value: float) -> list[dict]:
+    import struct
+    asset = Path(uasset_path).expanduser().resolve()
+    uexp_path = asset.with_suffix(".uexp")
+    if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
+        raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
+    names, imports = _read_uasset_tables(asset)
+    sections = read_trade_sections(asset)
+    if not 0 <= section_index < len(sections):
+        raise ValueError(f"No such trade section: {section_index}")
+    section = sections[section_index]
+    ref = _resolve_item_ref(names, imports, item)
+    if not isinstance(value, (int, float)) or not 0 <= float(value) <= 1000000:
+        raise ValueError(f"Bad trade value: {value!r}")
+    if any(row["ref"] == ref for row in section["rows"]):
+        raise ValueError("That item is already in this section.")
+    raw = bytearray(uexp_path.read_bytes())
+    insert_at = section["pairs_end"]
+    raw[insert_at:insert_at] = struct.pack("<i", ref) + struct.pack("<f", float(value))
+    struct.pack_into("<i", raw, section["offset"], section["count"] + 1)
+    struct.pack_into("<i", raw, section["size_offset"],
+                     struct.unpack_from("<i", raw, section["size_offset"])[0] + 8)
+    _bump_trade_outer_size(raw, 8)
+    uexp_path.write_bytes(bytes(raw))
+    _bump_trade_uasset(asset, 8)
+    before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
+    return _verify_trade_write(asset, [s["count"] for s in sections[:section_index]]
+                               + [sections[section_index]["count"] + 1]
+                               + [s["count"] for s in sections[section_index + 1:]],
+                               before)
+
+
+def add_trade_section(uasset_path: str | Path, key_item: str | int,
+                      value: float = 0.0) -> list[dict]:
+    import struct
+    asset = Path(uasset_path).expanduser().resolve()
+    uexp_path = asset.with_suffix(".uexp")
+    if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
+        raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
+    names, imports = _read_uasset_tables(asset)
+    sections = read_trade_sections(asset)
+    key_ref = _resolve_item_ref(names, imports, key_item)
+    if any(sec["key_ref"] == key_ref for sec in sections):
+        raise ValueError("That section already exists.")
+    if not isinstance(value, (int, float)) or not 0 <= float(value) <= 1000000:
+        raise ValueError(f"Bad trade value: {value!r}")
+    template = sections[-1]
+    lead = bytes(uexp_path.read_bytes()[template["key_offset"] + 4:template["value_offset"]])
+    if len(lead) != 41:
+        raise ValueError("Unexpected section layout, refusing to modify.")
+    raw = bytearray(uexp_path.read_bytes())
+    insert_at = template["pairs_end"]
+    raw[insert_at:insert_at] = (
+        struct.pack("<i", key_ref) + lead +
+        struct.pack("<f", float(value)) + struct.pack("<i", 0)
+    )
+    struct.pack_into("<i", raw, insert_at + 4 + 16, 8)
+    struct.pack_into("<i", raw, sections[0]["top_offset"], len(sections) + 1)
+    _bump_trade_outer_size(raw, 4 + len(lead) + 8)
+    uexp_path.write_bytes(bytes(raw))
+    _bump_trade_uasset(asset, 4 + len(lead) + 8)
+    before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
+    return _verify_trade_write(asset, [s["count"] for s in sections] + [0], before)
+
+
+def remove_trade_row(uasset_path: str | Path, section_index: int,
+                     item: str | int) -> list[dict]:
+    import struct
+    asset = Path(uasset_path).expanduser().resolve()
+    uexp_path = asset.with_suffix(".uexp")
+    if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
+        raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
+    names, imports = _read_uasset_tables(asset)
+    sections = read_trade_sections(asset)
+    if not 0 <= section_index < len(sections):
+        raise ValueError(f"No such trade section: {section_index}")
+    section = sections[section_index]
+    ref = _resolve_item_ref(names, imports, item)
+    matches = [row for row in section["rows"] if row["ref"] == ref]
+    if not matches:
+        raise ValueError("That item is not in this section.")
+    victim = matches[0]
+    raw = bytearray(uexp_path.read_bytes())
+    del raw[victim["offset"] - 4:victim["offset"] + 4]
+    struct.pack_into("<i", raw, section["offset"], section["count"] - 1)
+    struct.pack_into("<i", raw, section["size_offset"],
+                     struct.unpack_from("<i", raw, section["size_offset"])[0] - 8)
+    _bump_trade_outer_size(raw, -8)
+    uexp_path.write_bytes(bytes(raw))
+    _bump_trade_uasset(asset, -8)
+    before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
+    before.discard((victim["ref"], victim["value"]))
+    return _verify_trade_write(asset, [s["count"] - (1 if s is section else 0) for s in sections],
+                               before)
+
+
+def remove_trade_section(uasset_path: str | Path, section_index: int) -> list[dict]:
+    import struct
+    asset = Path(uasset_path).expanduser().resolve()
+    uexp_path = asset.with_suffix(".uexp")
+    if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
+        raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
+    sections = read_trade_sections(asset)
+    if not 0 <= section_index < len(sections):
+        raise ValueError(f"No such trade section: {section_index}")
+    if len(sections) <= 1:
+        raise ValueError("Cannot remove the last remaining section.")
+    victim = sections[section_index]
+    start = victim["key_offset"]
+    end = victim["pairs_end"]
+    raw = bytearray(uexp_path.read_bytes())
+    removed_len = end - start
+    del raw[start:end]
+    struct.pack_into("<i", raw, sections[0]["top_offset"], len(sections) - 1)
+    _bump_trade_outer_size(raw, -removed_len)
+    uexp_path.write_bytes(bytes(raw))
+    _bump_trade_uasset(asset, -removed_len)
+    before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
+    before -= {(row["ref"], row["value"]) for row in victim["rows"]}
+    return _verify_trade_write(asset, [s["count"] for i, s in enumerate(sections) if i != section_index],
+                               before)
+
+
+def _verify_trade_write(asset: Path, expected_counts: list[int],
+                        must_keep: set[tuple[int, float]] | None = None) -> list[dict]:
+    check = read_trade_sections(asset)
+    if [s["count"] for s in check] != expected_counts:
+        raise ValueError("Write verification failed, file may be damaged.")
+    if must_keep is not None:
+        after = {(row["ref"], row["value"]) for sec in check for row in sec["rows"]}
+        if not must_keep <= after:
+            raise ValueError("Write verification failed, file may be damaged.")
+    return check
+
+
+def write_trade_values(uasset_path: str | Path, changes: dict[int, float]) -> list[dict]:
+    import struct
+    asset = Path(uasset_path).expanduser().resolve()
+    uexp_path = asset.with_suffix(".uexp")
+    if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
+        raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
+    before_rows = []
+    for section in read_trade_sections(asset):
+        before_rows.extend(section["rows"])
+    known = {row["offset"] for row in before_rows}
+    for offset, value in changes.items():
+        if offset not in known:
+            raise ValueError(f"Unknown trade value offset: {offset}")
+        if not isinstance(value, (int, float)) or not 0 <= float(value) <= 1000000:
+            raise ValueError(f"Bad trade value for offset {offset}: {value!r}")
+    raw = bytearray(uexp_path.read_bytes())
+    patched = dict(changes)
+    for offset, value in patched.items():
+        struct.pack_into("<f", raw, offset, float(value))
+    uexp_path.write_bytes(bytes(raw))
+    try:
+        after_rows = []
+        for section in read_trade_sections(asset):
+            after_rows.extend(section["rows"])
+    except ValueError as exc:
+        raise ValueError(f"Write verification failed, file may be damaged: {exc}") from exc
+    after = {row["offset"]: row["value"] for row in after_rows}
+    if len(after_rows) != len(before_rows) or any(
+            abs(after[row["offset"]] - float(patched.get(row["offset"], row["value"]))) > 1e-6
+            for row in before_rows):
+        raise ValueError("Write verification failed, file may be damaged.")
+    return after_rows
+
+
+def find_trade_value_table(root: str | Path | None = None) -> str | None:
+    extracted = get_extracted_game_path(root)
+    direct = extracted / "Astro" / "Content" / "Globals" / (TRADE_VALUE_TABLE_LEAF + ".uasset")
+    try:
+        if direct.is_file() and not direct.is_symlink():
+            return direct.resolve().relative_to(extracted).as_posix()
+    except (ValueError, OSError):
+        pass
+    for rel in index_game_assets(root):
+        if Path(rel).stem == TRADE_VALUE_TABLE_LEAF:
+            return rel
+    return None
 
 
 def find_unreal_cmd() -> Path | None:
@@ -780,8 +1288,10 @@ def cook_project(project_file: str | Path,
 
 def pack_pak(input_directory: str | Path, output_pak: str | Path,
              repak_path: str | Path | None = None,
-             version: str = "V11",
+             version: str = "V4",
+             compression: str = "Zlib",
              timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+    import tempfile
     repak = _find_repak(repak_path)
     source = Path(input_directory).expanduser().resolve()
     destination = Path(output_pak).expanduser().resolve()
@@ -792,7 +1302,12 @@ def pack_pak(input_directory: str | Path, output_pak: str | Path,
     if destination.suffix.lower() != ".pak":
         raise ValueError("output_pak must have a .pak extension")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    return _run([str(repak.resolve()), "pack", str(source), str(destination), "--version", version], timeout)
+    with tempfile.TemporaryDirectory(prefix="aoy-pack-") as tmp:
+        clean = Path(tmp) / source.name
+        shutil.copytree(source, clean, ignore=shutil.ignore_patterns("*.bak", "*.bak.*", "*~", "versions"),
+                         symlinks=False)
+        return _run([str(repak.resolve()), "pack", str(clean), str(destination),
+                     "--version", version, "--compression", compression], timeout)
 
 
 def unpack_pak(input_pak: str | Path, output_directory: str | Path,
