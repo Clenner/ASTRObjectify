@@ -8,6 +8,7 @@ cd "$ROOT_DIR"
 
 echo "=== ASTRObjectify (AOY) Linux Installer ==="
 echo "Working directory: $ROOT_DIR"
+echo "Everything this installer fetches goes into $ROOT_DIR/local/ except Python/pip packages."
 echo
 
 for tool in curl unzip tar xz; do
@@ -401,9 +402,8 @@ fi
 if [ -n "$UE_CMD" ] && [ -f "$UE_CMD" ]; then
     echo "[OK] Unreal Engine 4.27 editor found: $UE_CMD"
 else
-    echo "[MISSING] Unreal Engine 4.27 command-line editor not found."
-    echo "          Set AOY_UE_CMD to the path of UE4Editor-Cmd if installed."
-    CHECK_FAIL=1
+    echo "[OPTIONAL] Unreal Engine 4.27 editor not found (not needed for trade-value mods)."
+    echo "           Set AOY_UE_CMD to the path of UE4Editor-Cmd if installed."
 fi
 
 echo

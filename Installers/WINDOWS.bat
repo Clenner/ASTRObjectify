@@ -3,35 +3,78 @@ setlocal
 cd /d "%~dp0.."
 set "ROOT=%CD%\"
 
+echo AOY installer: everything it downloads goes into "%ROOT%local\"
+echo except Python 3.10+ ^(winget, user scope^), PySide6 ^(pip^),
+echo and the .NET 6 Desktop Runtime ^(winget, required by CAS^).
+echo Unreal Engine 4.27 is optional and is never installed without asking.
+echo.
+
 where winget >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: winget is required to install Python, .NET, and Epic Games Launcher.
+    echo ERROR: winget is required to install Python and .NET.
     pause
     exit /b 1
 )
 
-python --version >nul 2>&1
-if errorlevel 1 (
-    py --version >nul 2>&1
-    if not errorlevel 1 (
-        echo Found Python via Windows py launcher.
-        doskey python=py $*
-        set "PYTHON_CMD=py"
-    ) else (
-        echo Installing Python 3.12...
+set "PYTHON_CMD="
+set "PYDIR="
+call :find_python
+if not defined PYTHON_CMD (
+    echo No usable Python 3.10+ found. Installing latest Python 3...
+    winget install --id Python.Python.3 --scope user --silent --accept-package-agreements --accept-source-agreements
+    if errorlevel 1 (
+        echo Latest Python install failed, trying pinned Python 3.12...
         winget install --exact --id Python.Python.3.12 --scope user --silent --accept-package-agreements --accept-source-agreements
         if errorlevel 1 (
             echo ERROR: Python installation failed.
             pause
             exit /b 1
         )
-        set "PATH=%LocalAppData%\Programs\Python\Python312;%LocalAppData%\Programs\Python\Python312\Scripts;%PATH%"
+    )
+    call :find_python
+)
+if not defined PYTHON_CMD (
+    echo ERROR: Python 3.10+ is installed but not reachable from this terminal.
+    echo Close and reopen the terminal, then re-run the installer.
+    pause
+    exit /b 1
+)
+echo Using Python:
+"%PYTHON_CMD%" --version
+if defined PYDIR (
+    set "PATH=%PYDIR%;%PYDIR%\Scripts;%PATH%"
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "$d=$env:PYDIR; $p=[Environment]::GetEnvironmentVariable('PATH','User'); if ($p -split ';' -notcontains $d) { [Environment]::SetEnvironmentVariable('PATH', $d + ';' + $d + '\Scripts;' + $p, 'User') }" >nul 2>&1
+    echo NOTE: Added Python to your user PATH. Close and reopen other terminals.
+)
+goto :python_ready
+
+:find_python
+for %%C in (py python) do (
+    if not defined PYTHON_CMD (
+        %%C -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+        if not errorlevel 1 set "PYTHON_CMD=%%C"
     )
 )
+if not defined PYTHON_CMD (
+    for %%V in (314 313 312 311 310) do (
+        if not defined PYTHON_CMD (
+            if exist "%LocalAppData%\Programs\Python\Python3%%V\python.exe" (
+                "%LocalAppData%\Programs\Python\Python3%%V\python.exe" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+                if not errorlevel 1 (
+                    set "PYTHON_CMD=%LocalAppData%\Programs\Python\Python3%%V\python.exe"
+                    set "PYDIR=%LocalAppData%\Programs\Python\Python3%%V"
+                )
+            )
+        )
+    )
+)
+exit /b 0
 
-python -m ensurepip --upgrade >nul 2>&1
-python -m pip install --upgrade pip --quiet
-python -m pip install PySide6
+:python_ready
+
+"%PYTHON_CMD%" -m ensurepip --upgrade >nul 2>&1
+"%PYTHON_CMD%" -m pip install --upgrade pip --quiet
+"%PYTHON_CMD%" -m pip install PySide6
 if errorlevel 1 (
     echo ERROR: PySide6 installation failed.
     pause
@@ -134,17 +177,24 @@ if exist "%ROOT%local\UEAssetToolkit-Fixes\AssetGenerator\AssetGenerator.uplugin
 )
 set "UE_CMD=%ProgramFiles%\Epic Games\UE_4.27\Engine\Binaries\Win64\UE4Editor-Cmd.exe"
 if not exist "%UE_CMD%" set "UE_CMD=%ProgramFiles(x86)%\Epic Games\UE_4.27\Engine\Binaries\Win64\UE4Editor-Cmd.exe"
-if not exist "%UE_CMD%" (
-    echo UE 4.27 was not found. Epic Games Launcher will open so you can install it.
-    set "EPIC_LAUNCHER=%ProgramFiles(x86)%\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"
-    if not exist "%EPIC_LAUNCHER%" (
-        winget install --exact --id EpicGames.EpicGamesLauncher --silent --accept-package-agreements --accept-source-agreements
-    )
-    if exist "%EPIC_LAUNCHER%" start "" "%EPIC_LAUNCHER%"
-    echo In the Launcher, open Unreal Engine ^> Library, add an engine version, select 4.27.2, and install it.
-) else (
+if exist "%UE_CMD%" (
     echo Found UE 4.27 at "%UE_CMD%".
+    goto :ue_done
 )
+echo UE 4.27 is only needed for advanced asset cooking, not for trade-value mods.
+set "GET_UE="
+set /p "GET_UE=Install or open the Epic Games Launcher to get UE 4.27 now? [y/N] "
+if /i not "%GET_UE%"=="y" (
+    echo Skipping UE 4.27. You can install it later if you need asset cooking.
+    goto :ue_done
+)
+set "EPIC_LAUNCHER=%ProgramFiles(x86)%\Epic Games\Launcher\Portal\Binaries\Win64\EpicGamesLauncher.exe"
+if not exist "%EPIC_LAUNCHER%" (
+    winget install --exact --id EpicGames.EpicGamesLauncher --silent --accept-package-agreements --accept-source-agreements
+)
+if exist "%EPIC_LAUNCHER%" start "" "%EPIC_LAUNCHER%"
+echo In the Launcher, open Unreal Engine ^> Library, add an engine version, select 4.27.2, and install it.
+:ue_done
 
 echo.
 echo ================= AOY Setup Check =================
@@ -173,9 +223,9 @@ if exist "%ROOT%local\AOYAssetProject\AOYAssetProject.uproject" if exist "%ROOT%
     echo [MISSING] AOYAssetProject or its enabled toolkit plugins are not configured.
     set "CHECK_FAIL=1"
 )
-python -c "import PySide6" >nul 2>&1
+"%PYTHON_CMD%" -c "import PySide6" >nul 2>&1
 if errorlevel 1 (
-    echo [MISSING] Python or PySide6 is not available from this terminal.
+    echo [MISSING] PySide6 is not available for "%PYTHON_CMD%".
     set "CHECK_FAIL=1"
 ) else (
     echo [OK] Python and PySide6 are available.
@@ -214,8 +264,7 @@ if errorlevel 1 (
 if exist "%UE_CMD%" (
     echo [OK] Unreal Engine 4.27 command-line editor found: "%UE_CMD%"
 ) else (
-    echo [MISSING] Unreal Engine 4.27 command-line editor not found.
-    set "CHECK_FAIL=1"
+    echo [OPTIONAL] Unreal Engine 4.27 editor not found ^(not needed for trade-value mods^).
 )
 echo.
 echo Toolkit plugins are copied and enabled in local\AOYAssetProject.

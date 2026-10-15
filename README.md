@@ -9,7 +9,7 @@
 4. Lastly, run ```./LINUX.sh```
 ## How to run the program after installation
 #### WARNING: MANY FEATURES MAY NOT FUNCTION IF THE INSTALLATION DOESNT WORK
-###### Simply just run interface.py
+###### Double-click Run-AOY.bat, or run ```py interface.py``` from a terminal
 
 ## IF YOU HAVE ANY ISSUES, CONTACT jamee6232 on Discord, or reach out to clennersupport@gmail.com
 
