@@ -177,6 +177,15 @@ if [ "$DOTNET_FOUND" -eq 0 ]; then
     echo "Install it manually (e.g. rerun this installer) or via Microsoft's dotnet-install script."
 fi
 
+if command -v dotnet >/dev/null 2>&1 && dotnet --list-sdks >/dev/null 2>&1; then
+    if [ -f "$ROOT_DIR/tools/AOYTrade/AOYTrade.csproj" ]; then
+        echo "Building AOYTrade UAssetAPI helper..."
+        if ! dotnet publish "$ROOT_DIR/tools/AOYTrade/AOYTrade.csproj" -c Release -o "$ROOT_DIR/local/AOYTrade" --nologo -v q; then
+            echo "WARNING: AOYTrade build failed; AOY will use the built-in reader."
+        fi
+    fi
+fi
+
 if [ ! -d "$ROOT_DIR/local/UEAssetToolkit-Fixes" ]; then
     echo "Downloading the Astroneer community UEAssetToolkit plugins..."
     TEMP_DIR="$ROOT_DIR/local/UEAssetToolkit-temp"

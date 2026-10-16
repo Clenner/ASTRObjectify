@@ -1,2 +1,4 @@
 /local/
 /Workspaces/
+tools/**/bin/
+tools/**/obj/

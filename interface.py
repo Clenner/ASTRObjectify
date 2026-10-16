@@ -763,7 +763,7 @@ class AOYWindow(QMainWindow):
                     ratio_out = state["t_spins"][index].value()
                     if ratio_out <= 0:
                         continue
-                    changes[row["offset"]] = ratio_in / ratio_out
+                    changes[row["key"]] = ratio_in / ratio_out
             if not changes:
                 dialog.accept()
                 return

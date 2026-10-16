@@ -134,6 +134,15 @@ if errorlevel 1 (
     )
 )
 
+dotnet --list-sdks >nul 2>&1
+if not errorlevel 1 (
+    if exist "%ROOT%tools\AOYTrade\AOYTrade.csproj" (
+        echo Building AOYTrade UAssetAPI helper...
+        dotnet publish "%ROOT%tools\AOYTrade\AOYTrade.csproj" -c Release -o "%ROOT%local\AOYTrade" --nologo -v q
+        if errorlevel 1 echo WARNING: AOYTrade build failed; AOY will use the built-in reader.
+    )
+)
+
 if not exist "%ROOT%local\UEAssetToolkit-Fixes" (
     echo Downloading the Astroneer community UEAssetToolkit plugins...
     powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $base='%ROOT%local'; $dest=Join-Path $base 'UEAssetToolkit-Fixes'; $temp=Join-Path $base 'UEAssetToolkit-temp'; $zip=Join-Path $base 'UEAssetToolkit.zip'; Invoke-WebRequest 'https://api.github.com/repos/AstroTechies/UEAssetToolkit-Fixes/zipball' -OutFile $zip; Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force; $root=Get-ChildItem -LiteralPath $temp -Directory | Select-Object -First 1; if (-not $root) { throw 'Toolkit archive was empty.' }; Move-Item -LiteralPath $root.FullName -Destination $dest; Remove-Item -LiteralPath $temp -Recurse -Force; Remove-Item -LiteralPath $zip -Force"

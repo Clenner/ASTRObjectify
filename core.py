@@ -693,69 +693,6 @@ def rebuild_integrator(workspace_path: str | Path,
 TRADE_VALUE_TABLE_LEAF = "ItemTradeValueTable"
 
 
-def _read_uasset_tables(uasset_path: str | Path) -> tuple[list[str], list[tuple[int, int, int]]]:
-    import struct
-    raw = Path(uasset_path).expanduser().resolve().read_bytes()
-    if len(raw) < 72 or struct.unpack_from("<I", raw, 0)[0] != 0x9E2A83C1:
-        raise ValueError(f"Not a UE package file: {uasset_path}")
-
-    def ri(off: int) -> int:
-        return struct.unpack_from("<i", raw, off)[0]
-
-    name_count, name_off = ri(41), ri(45)
-    imp_count, imp_off = ri(65), ri(69)
-    if not (0 < name_count < 100000 and 0 < name_off < len(raw)):
-        raise ValueError(f"Could not read name table: {uasset_path}")
-    names: list[str] = []
-    o = name_off
-    for _ in range(name_count):
-        n = struct.unpack_from("<i", raw, o)[0]
-        o += 4
-        if n == 0:
-            names.append("")
-            continue
-        if n < 0 or o + abs(n) > len(raw):
-            raise ValueError(f"Corrupt name table: {uasset_path}")
-        names.append(raw[o:o + abs(n)].decode("ascii", "replace").rstrip("\x00"))
-        o += abs(n) + 4
-    imports: list[tuple[int, int, int]] = []
-    o = imp_off
-    for _ in range(imp_count):
-        if o + 28 > len(raw):
-            raise ValueError(f"Corrupt import table: {uasset_path}")
-        cname = struct.unpack_from("<i", raw, o + 8)[0]
-        oname = struct.unpack_from("<i", raw, o + 20)[0]
-        outer = struct.unpack_from("<i", raw, o + 16)[0]
-        imports.append((cname, oname, outer))
-        o += 28
-    return names, imports
-
-
-def _import_game_path(names: list[str], imports: list[tuple[int, int, int]], ref: int) -> str | None:
-    seen: set[int] = set()
-    while ref < 0 and -ref - 1 < len(imports) and ref not in seen:
-        seen.add(ref)
-        _, oname, outer = imports[-ref - 1]
-        name = names[oname] if 0 <= oname < len(names) else ""
-        if name.startswith("/Game/"):
-            return name
-        if outer == 0:
-            return name or None
-        ref = outer
-    return None
-
-
-def _import_display_name(names: list[str], imports: list[tuple[int, int, int]], ref: int) -> str:
-    path = _import_game_path(names, imports, ref)
-    if path:
-        return pretty_item_name(path.rsplit("/", 1)[-1])
-    if ref < 0 and -ref - 1 < len(imports):
-        _, oname, _ = imports[-ref - 1]
-        if 0 <= oname < len(names) and names[oname]:
-            return pretty_item_name(names[oname])
-    return f"ref {ref}"
-
-
 def pretty_item_name(leaf: str) -> str:
     text = leaf.strip()
     if text in ITEM_NAME_OVERRIDES:
@@ -796,78 +733,86 @@ def read_trade_values(uasset_path: str | Path) -> list[dict]:
     return sections[-1]["rows"]
 
 
+def _find_aoytrade() -> Path | None:
+    """Locate the optional AOYTrade UAssetAPI helper (built via dotnet)."""
+    base = Path(__file__).resolve().parent
+    for candidate in (
+        base / "local" / "AOYTrade" / "AOYTrade.dll",
+        base / "tools" / "AOYTrade" / "bin" / "Release" / "net8.0" / "AOYTrade.dll",
+    ):
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    return None
+
+
+def verify_with_uassetapi(uasset_path: str | Path) -> dict | None:
+    """Load a .uasset through UAssetAPI and report binary equality.
+
+    Returns the tool's JSON summary, or None when the helper is not
+    built/available. Raw-byte code paths never depend on this.
+    """
+    tool = _find_aoytrade()
+    if tool is None:
+        return None
+    asset = Path(uasset_path).expanduser().resolve()
+    try:
+        result = subprocess.run(
+            ["dotnet", str(tool), "verify", str(asset)],
+            capture_output=True, text=True, timeout=180,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode not in (0, 3) or not result.stdout.strip():
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _uassetapi_mutate(op: str, uasset_path: str | Path, *op_args: str | int | float) -> None:
+    """Apply a trade mutation through the AOYTrade UAssetAPI helper.
+
+    Raises ValueError on domain errors (unknown section/item, bad value)
+    and OSError when the helper is unavailable or fails.
+    """
+    tool = _find_aoytrade()
+    if tool is None:
+        raise OSError(
+            "AOYTrade helper not available - install dotnet and rerun the installer "
+            "to build local/AOYTrade."
+        )
+    asset = Path(uasset_path).expanduser().resolve()
+    cmd = ["dotnet", str(tool), op, str(asset), *(str(a) for a in op_args)]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError(f"AOYTrade helper failed: {exc}") from exc
+    if result.returncode == 0:
+        return
+    if result.returncode == 4:
+        detail = result.stderr.strip().splitlines()
+        raise ValueError(detail[-1] if detail else f"AOYTrade {op} failed")
+    raise OSError(f"AOYTrade {op} failed: {result.stderr.strip()[-500:]}")
+
+
 def read_trade_sections(uasset_path: str | Path) -> list[dict]:
-    import struct
+    """Read trade sections through the AOYTrade UAssetAPI helper."""
     asset = Path(uasset_path).expanduser().resolve()
     uexp_path = asset.with_suffix(".uexp")
     if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
         raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
-    names, imports = _read_uasset_tables(asset)
-    ux = uexp_path.read_bytes()
-    n = len(ux) // 4
-    ints = struct.unpack("<%di" % n, ux[:n * 4])
-    flts = struct.unpack("<%df" % n, ux[:n * 4])
-
-    def sane(v: float) -> bool:
-        return v == v and 0 <= v < 1000000 and (v == 0 or v >= 1e-6)
-
-    sections: list[dict] = []
-    cursor = 0
-    while cursor <= len(ux) - 8:
-        count = struct.unpack_from("<i", ux, cursor)[0]
-        if 0 <= count <= 500 and cursor + 4 + count * 8 <= len(ux):
-            rows = []
-            ok = True
-            for j in range(count):
-                key = struct.unpack_from("<i", ux, cursor + 4 + j * 8)[0]
-                val = struct.unpack_from("<f", ux, cursor + 8 + j * 8)[0]
-                if not -len(imports) <= key <= 1 or not sane(val):
-                    ok = False
-                    break
-                rows.append((key, val, cursor + 8 + j * 8))
-            if not ok:
-                cursor += 1
-                continue
-            pairs_start = cursor + 4
-            size_off = pairs_start - 33
-            value_off = pairs_start - 8
-            key_off = pairs_start - 53
-            top_off = pairs_start - 57
-            if size_off < 0 or key_off < 0:
-                cursor += 1
-                continue
-            if struct.unpack_from("<i", ux, size_off)[0] != 8 + count * 8:
-                cursor += 1
-                continue
-            key_ref = struct.unpack_from("<i", ux, key_off)[0]
-            if not -len(imports) <= key_ref <= 1:
-                cursor += 1
-                continue
-            decoded = []
-            for key, val, offset in rows:
-                leaf = None
-                path = _import_game_path(names, imports, key)
-                if path and path.startswith("/Game/"):
-                    leaf = path.rsplit("/", 1)[-1]
-                elif -len(imports) <= key <= 1 and key < 0:
-                    _, oname, _ = imports[-key - 1]
-                    if 0 <= oname < len(names) and names[oname]:
-                        leaf = names[oname]
-                decoded.append({
-                    "display": _import_display_name(names, imports, key),
-                    "leaf": leaf,
-                    "ref": key,
-                    "value": val,
-                    "offset": offset,
-                })
-            sections.append({"offset": cursor, "count": count, "rows": decoded,
-                             "key_ref": key_ref, "key_offset": key_off,
-                             "value_offset": value_off, "size_offset": size_off,
-                             "top_offset": top_off, "pairs_end": pairs_start + count * 8,
-                             "label": trade_section_label(names, imports, key_ref)})
-            cursor += 4 + count * 8
-            continue
-        cursor += 1
+    api_sections = _uassetapi_sections(asset)
+    if api_sections is None:
+        raise OSError(
+            "AOYTrade helper not available - install dotnet and rerun the installer "
+            "to build local/AOYTrade."
+        )
+    try:
+        sections = [_section_from_api(entry) for entry in api_sections]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"Could not read trade sections: {exc}") from exc
     if not sections:
         raise ValueError(f"No trade value map found in: {asset.name}")
     return sections
@@ -875,109 +820,122 @@ def read_trade_sections(uasset_path: str | Path) -> list[dict]:
 
 def describe_ref(uasset_path: str | Path, ref: int) -> str:
     asset = Path(uasset_path).expanduser().resolve()
-    names, imports = _read_uasset_tables(asset)
-    if -len(imports) <= ref <= 1 and ref < 0:
-        _, oname, _ = imports[-ref - 1]
-        if 0 <= oname < len(names) and names[oname]:
-            text = names[oname]
-            if text.endswith("_C"):
-                text = text[:-2]
-            return pretty_item_name(text)
+    for section in read_trade_sections(asset):
+        if section["key_ref"] == ref:
+            return section["label"]
+        for row in section["rows"]:
+            if row["ref"] == ref:
+                return row["display"]
     return f"ref {ref}"
 
 
-def trade_section_label(names: list[str], imports: list[tuple[int, int, int]], key_ref: int) -> str:
-    if -len(imports) <= key_ref <= 1 and key_ref < 0:
-        _, oname, _ = imports[-key_ref - 1]
-        if 0 <= oname < len(names) and names[oname]:
-            text = names[oname]
-            if text.endswith("_C"):
-                text = text[:-2]
-            for keyword, label in (("Scrap", "Scrap"), ("Astronium", "Astronium"),
-                                   ("FaultFinder", "Fault Finder")):
-                if keyword.lower() in text.lower():
-                    return label
-            return pretty_item_name(text)
+def trade_section_label(names=None, imports=None, key_ref=None, text=None) -> str:
+    if text is None and names is not None and imports is not None and key_ref is not None:
+        if -len(imports) <= key_ref <= 1 and key_ref < 0:
+            _, oname, _ = imports[-key_ref - 1]
+            if 0 <= oname < len(names) and names[oname]:
+                text = names[oname]
+                if text.endswith("_C"):
+                    text = text[:-2]
+    if text:
+        for keyword, label in (("Scrap", "Scrap"), ("Astronium", "Astronium"),
+                               ("FaultFinder", "Fault Finder")):
+            if keyword.lower() in text.lower():
+                return label
+        return pretty_item_name(text)
     return "Section"
 
 
-def _bump_trade_outer_size(raw: bytearray, delta: int) -> None:
-    """Update the top-level trade-map size at .uexp offset 16.
+def _uassetapi_sections(uasset_path: str | Path) -> list | None:
+    """Read trade sections through the AOYTrade UAssetAPI helper.
 
-    Verified against working OrbitalMadness pak: game base 535,
-    +1 row = 543. Manual edits must keep this in sync or the game
-    silently falls back to vanilla values.
+    Returns the tool's section list, or None when the helper is not
+    built/available so callers fall back to the built-in reader.
     """
-    import struct
-    if len(raw) < 20:
-        raise ValueError("Trade .uexp too small, refusing to modify.")
-    size = struct.unpack_from("<i", raw, 16)[0]
-    if not 0 < size < 100000:
-        raise ValueError("Unexpected outer trade size, refusing to modify.")
-    struct.pack_into("<i", raw, 16, size + delta)
+    tool = _find_aoytrade()
+    if tool is None:
+        return None
+    asset = Path(uasset_path).expanduser().resolve()
+    try:
+        result = subprocess.run(["dotnet", str(tool), "sections", str(asset)],
+                                capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    sections = data.get("sections") if isinstance(data, dict) else None
+    return sections if isinstance(sections, list) else None
 
 
-def _bump_trade_uasset(asset_path: str | Path, delta: int) -> None:
-    """Update ItemTradeValueTable .uasset size fields after .uexp size change.
+def _section_from_api(entry: dict) -> dict:
+    key_ref = int(entry["key_ref"])
+    rows = []
+    for row in entry.get("rows", []):
+        ref = int(row["item_ref"])
+        name = str(row["item_name"])
+        rows.append({
+            "display": pretty_item_name(name),
+            "leaf": name,
+            "ref": ref,
+            "value": float(row["value"]),
+            "key": (key_ref, ref),
+        })
+    return {
+        "key_ref": key_ref,
+        "label": trade_section_label(text=str(entry.get("key_name") or "")),
+        "count": len(rows),
+        "rows": rows,
+    }
 
-    Byte-verified against working OrbitalMadness pak (game base vs +1 row):
-    two little-endian i32 fields, at offsets 169 and 11770, each +8 per
-    added row (588 -> 596 is the exact value in the crash log when stale).
-    Only valid for edits that reuse existing imports/names (no table growth),
-    which is all AOY trade-row edits.
-    """
-    import struct
-    asset = Path(asset_path).expanduser().resolve()
-    raw = bytearray(asset.read_bytes())
-    if len(raw) < 11774:
-        raise ValueError("Unexpected trade .uasset size, refusing to modify.")
-    for off in (169, 11770):
-        size = struct.unpack_from("<i", raw, off)[0]
-        if not 0 < size < 100000:
-            raise ValueError("Unexpected trade .uasset field, refusing to modify.")
-        struct.pack_into("<i", raw, off, size + delta)
-    asset.write_bytes(bytes(raw))
 
-
-def _resolve_item_ref(names: list[str], imports: list[tuple[int, int, int]], item: str | int) -> int:
+def _resolve_item_ref(item: str | int, uasset_path: str | Path) -> int:
     if isinstance(item, bool):
         raise ValueError(f"Unknown item: {item!r}")
     if isinstance(item, int):
-        if -len(imports) <= item <= 1 and item != 0:
+        if item != 0:
             return item
         raise ValueError(f"Unknown item reference: {item!r}")
-    for index, (_, oname, _) in enumerate(imports):
-        if 0 <= oname < len(names) and names[oname] == item:
-            return -index - 1
-    raise ValueError(f"Item is not referenced by this file: {item!r}")
+    asset = Path(uasset_path).expanduser().resolve()
+    tool = _find_aoytrade()
+    if tool is None:
+        raise OSError(
+            "AOYTrade helper not available - install dotnet and rerun the installer "
+            "to build local/AOYTrade."
+        )
+    try:
+        result = subprocess.run(["dotnet", str(tool), "resolve", str(asset), item],
+                                capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise OSError(f"AOYTrade helper failed: {exc}") from exc
+    if result.returncode == 0:
+        try:
+            return int(json.loads(result.stdout)["item_ref"])
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            pass
+    detail = result.stderr.strip().splitlines()
+    raise ValueError(detail[-1] if detail else f"Item is not referenced by this file: {item!r}")
 
 
 def add_trade_row(uasset_path: str | Path, section_index: int,
                   item: str | int, value: float) -> list[dict]:
-    import struct
     asset = Path(uasset_path).expanduser().resolve()
     uexp_path = asset.with_suffix(".uexp")
     if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
         raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
-    names, imports = _read_uasset_tables(asset)
     sections = read_trade_sections(asset)
     if not 0 <= section_index < len(sections):
         raise ValueError(f"No such trade section: {section_index}")
     section = sections[section_index]
-    ref = _resolve_item_ref(names, imports, item)
+    ref = _resolve_item_ref(item, asset)
     if not isinstance(value, (int, float)) or not 0 <= float(value) <= 1000000:
         raise ValueError(f"Bad trade value: {value!r}")
     if any(row["ref"] == ref for row in section["rows"]):
         raise ValueError("That item is already in this section.")
-    raw = bytearray(uexp_path.read_bytes())
-    insert_at = section["pairs_end"]
-    raw[insert_at:insert_at] = struct.pack("<i", ref) + struct.pack("<f", float(value))
-    struct.pack_into("<i", raw, section["offset"], section["count"] + 1)
-    struct.pack_into("<i", raw, section["size_offset"],
-                     struct.unpack_from("<i", raw, section["size_offset"])[0] + 8)
-    _bump_trade_outer_size(raw, 8)
-    uexp_path.write_bytes(bytes(raw))
-    _bump_trade_uasset(asset, 8)
+    _uassetapi_mutate("add-row", asset, section["key_ref"], ref, float(value))
     before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
     return _verify_trade_write(asset, [s["count"] for s in sections[:section_index]]
                                + [sections[section_index]["count"] + 1]
@@ -987,62 +945,37 @@ def add_trade_row(uasset_path: str | Path, section_index: int,
 
 def add_trade_section(uasset_path: str | Path, key_item: str | int,
                       value: float = 0.0) -> list[dict]:
-    import struct
     asset = Path(uasset_path).expanduser().resolve()
     uexp_path = asset.with_suffix(".uexp")
     if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
         raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
-    names, imports = _read_uasset_tables(asset)
     sections = read_trade_sections(asset)
-    key_ref = _resolve_item_ref(names, imports, key_item)
+    key_ref = _resolve_item_ref(key_item, asset)
     if any(sec["key_ref"] == key_ref for sec in sections):
         raise ValueError("That section already exists.")
     if not isinstance(value, (int, float)) or not 0 <= float(value) <= 1000000:
         raise ValueError(f"Bad trade value: {value!r}")
-    template = sections[-1]
-    lead = bytes(uexp_path.read_bytes()[template["key_offset"] + 4:template["value_offset"]])
-    if len(lead) != 41:
-        raise ValueError("Unexpected section layout, refusing to modify.")
-    raw = bytearray(uexp_path.read_bytes())
-    insert_at = template["pairs_end"]
-    raw[insert_at:insert_at] = (
-        struct.pack("<i", key_ref) + lead +
-        struct.pack("<f", float(value)) + struct.pack("<i", 0)
-    )
-    struct.pack_into("<i", raw, insert_at + 4 + 16, 8)
-    struct.pack_into("<i", raw, sections[0]["top_offset"], len(sections) + 1)
-    _bump_trade_outer_size(raw, 4 + len(lead) + 8)
-    uexp_path.write_bytes(bytes(raw))
-    _bump_trade_uasset(asset, 4 + len(lead) + 8)
+    _uassetapi_mutate("add-section", asset, key_ref)
     before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
     return _verify_trade_write(asset, [s["count"] for s in sections] + [0], before)
 
 
 def remove_trade_row(uasset_path: str | Path, section_index: int,
                      item: str | int) -> list[dict]:
-    import struct
     asset = Path(uasset_path).expanduser().resolve()
     uexp_path = asset.with_suffix(".uexp")
     if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
         raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
-    names, imports = _read_uasset_tables(asset)
     sections = read_trade_sections(asset)
     if not 0 <= section_index < len(sections):
         raise ValueError(f"No such trade section: {section_index}")
     section = sections[section_index]
-    ref = _resolve_item_ref(names, imports, item)
+    ref = _resolve_item_ref(item, asset)
     matches = [row for row in section["rows"] if row["ref"] == ref]
     if not matches:
         raise ValueError("That item is not in this section.")
     victim = matches[0]
-    raw = bytearray(uexp_path.read_bytes())
-    del raw[victim["offset"] - 4:victim["offset"] + 4]
-    struct.pack_into("<i", raw, section["offset"], section["count"] - 1)
-    struct.pack_into("<i", raw, section["size_offset"],
-                     struct.unpack_from("<i", raw, section["size_offset"])[0] - 8)
-    _bump_trade_outer_size(raw, -8)
-    uexp_path.write_bytes(bytes(raw))
-    _bump_trade_uasset(asset, -8)
+    _uassetapi_mutate("remove-row", asset, section["key_ref"], ref)
     before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
     before.discard((victim["ref"], victim["value"]))
     return _verify_trade_write(asset, [s["count"] - (1 if s is section else 0) for s in sections],
@@ -1050,7 +983,6 @@ def remove_trade_row(uasset_path: str | Path, section_index: int,
 
 
 def remove_trade_section(uasset_path: str | Path, section_index: int) -> list[dict]:
-    import struct
     asset = Path(uasset_path).expanduser().resolve()
     uexp_path = asset.with_suffix(".uexp")
     if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
@@ -1061,15 +993,7 @@ def remove_trade_section(uasset_path: str | Path, section_index: int) -> list[di
     if len(sections) <= 1:
         raise ValueError("Cannot remove the last remaining section.")
     victim = sections[section_index]
-    start = victim["key_offset"]
-    end = victim["pairs_end"]
-    raw = bytearray(uexp_path.read_bytes())
-    removed_len = end - start
-    del raw[start:end]
-    struct.pack_into("<i", raw, sections[0]["top_offset"], len(sections) - 1)
-    _bump_trade_outer_size(raw, -removed_len)
-    uexp_path.write_bytes(bytes(raw))
-    _bump_trade_uasset(asset, -removed_len)
+    _uassetapi_mutate("remove-section", asset, victim["key_ref"])
     before = {(row["ref"], row["value"]) for sec in sections for row in sec["rows"]}
     before -= {(row["ref"], row["value"]) for row in victim["rows"]}
     return _verify_trade_write(asset, [s["count"] for i, s in enumerate(sections) if i != section_index],
@@ -1088,36 +1012,43 @@ def _verify_trade_write(asset: Path, expected_counts: list[int],
     return check
 
 
-def write_trade_values(uasset_path: str | Path, changes: dict[int, float]) -> list[dict]:
-    import struct
+def write_trade_values(uasset_path: str | Path, changes: dict) -> list[dict]:
+    """Write trade values.
+
+    changes maps (section_key_ref, item_ref) tuples to new float values.
+    """
     asset = Path(uasset_path).expanduser().resolve()
     uexp_path = asset.with_suffix(".uexp")
     if asset.suffix.lower() != ".uasset" or not uexp_path.is_file():
         raise ValueError(f"Trade table needs its .uasset + .uexp pair: {asset}")
-    before_rows = []
-    for section in read_trade_sections(asset):
-        before_rows.extend(section["rows"])
-    known = {row["offset"] for row in before_rows}
-    for offset, value in changes.items():
-        if offset not in known:
-            raise ValueError(f"Unknown trade value offset: {offset}")
+    sections = read_trade_sections(asset)
+    by_key: dict = {}
+    for section in sections:
+        for row in section["rows"]:
+            by_key[row["key"]] = row
+    norm: dict = {}
+    for key, value in changes.items():
+        if not isinstance(key, tuple) or len(key) != 2:
+            raise ValueError(f"Trade keys must be (section_key_ref, item_ref) tuples, got: {key!r}")
+        row = by_key.get(key)
+        if row is None:
+            raise ValueError(f"Unknown trade value key: {key!r}")
         if not isinstance(value, (int, float)) or not 0 <= float(value) <= 1000000:
-            raise ValueError(f"Bad trade value for offset {offset}: {value!r}")
-    raw = bytearray(uexp_path.read_bytes())
-    patched = dict(changes)
-    for offset, value in patched.items():
-        struct.pack_into("<f", raw, offset, float(value))
-    uexp_path.write_bytes(bytes(raw))
+            raise ValueError(f"Bad trade value for {key!r}: {value!r}")
+        norm[row["key"]] = float(value)
+    triplets = [(sec, item, val) for (sec, item), val in norm.items()]
+    if triplets:
+        _uassetapi_mutate("set-values", asset, *[v for t in triplets for v in t])
     try:
         after_rows = []
         for section in read_trade_sections(asset):
             after_rows.extend(section["rows"])
     except ValueError as exc:
         raise ValueError(f"Write verification failed, file may be damaged: {exc}") from exc
-    after = {row["offset"]: row["value"] for row in after_rows}
-    if len(after_rows) != len(before_rows) or any(
-            abs(after[row["offset"]] - float(patched.get(row["offset"], row["value"]))) > 1e-6
-            for row in before_rows):
+    after = {row["key"]: row["value"] for row in after_rows}
+    if len(after_rows) != sum(len(s["rows"]) for s in sections) or any(
+            abs(after[row["key"]] - norm.get(row["key"], row["value"])) > 1e-6
+            for sec in sections for row in sec["rows"]):
         raise ValueError("Write verification failed, file may be damaged.")
     return after_rows
 
